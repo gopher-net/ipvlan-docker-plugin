@@ -1,0 +1,8 @@
+plugin:
+  build: .
+  volumes:
+    - /usr/share/docker/plugins/ipvlan.sock:/usr/share/docker/plugins/ipvlan.sock
+    - /var/run/docker.sock:/var/run/docker.sock
+  net: host
+  privileged: true
+
