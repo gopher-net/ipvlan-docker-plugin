@@ -21,8 +21,9 @@ _cgo_export.*
 
 _testmain.go
 
+# OS/IDE specific extensions
 *.exe
 *.test
 *.prof
 .idea
-
+.DS_Store

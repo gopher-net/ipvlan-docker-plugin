@@ -2,14 +2,11 @@ package ipvlan
 
 import (
 	"bytes"
-	//	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
-	//	"regexp"
 
 	log "github.com/Sirupsen/logrus"
-	//	"github.com/docker/libnetwork/netutils"
 	"github.com/vishvananda/netlink"
 )
 
@@ -101,4 +98,13 @@ func getIpVlanMode(s string) (netlink.IPVlanMode, error) {
 	default:
 		return 0, fmt.Errorf("unknown ipvlan mode: %q", s)
 	}
+}
+
+func validateHostIface(ifaceStr string) bool {
+	_, err := net.InterfaceByName(ifaceStr)
+	if err != nil {
+		log.Warnf("interface [ %s ] was not found on the host. Please verify that the interface is valid: %s", ifaceStr, err)
+		return false
+	}
+	return true
 }

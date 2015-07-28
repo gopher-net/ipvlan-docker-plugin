@@ -21,8 +21,10 @@ import (
 const (
 	MethodReceiver     = "NetworkDriver"
 	defaultRoute       = "0.0.0.0/0"
-	defaultMTU         = 1500
-	containerEthPrefix = "eth" // should this be mutable?
+	containerEthPrefix = "eth"
+	ipVlanL2           = "l2"
+	ipVlanL3           = "l3"
+	minMTU             = 68
 )
 
 type ipvlanType netlink.IPVlanMode
@@ -37,13 +39,6 @@ type Driver interface {
 	Listen(string) error
 }
 
-// Struct for binding plugin specific configurations
-type pluginConfig struct {
-	mode            string
-	containerSubnet *net.IPNet
-	gatewayIP       net.IP
-}
-
 type driver struct {
 	dockerer
 	ipAllocator *ipallocator.IPAllocator
@@ -54,31 +49,75 @@ type driver struct {
 	pluginConfig
 }
 
-func New(version, mode string, ctx *cli.Context) (Driver, error) {
+// Struct for binding plugin specific configurations (cli.go for details).
+type pluginConfig struct {
+	mtu             int
+	mode            string
+	hostIface       string
+	containerSubnet *net.IPNet
+	gatewayIP       net.IP
+}
+
+func New(version string, ctx *cli.Context) (Driver, error) {
 	docker, err := dockerclient.NewDockerClient("unix:///var/run/docker.sock", nil)
 	if err != nil {
 		return nil, fmt.Errorf("could not connect to docker: %s", err)
 	}
+	// bind CLI opts to the user config struct
+	if ok := validateHostIface(ctx.String("host-interface")); !ok {
+		log.Fatalf("Requird field [ host-interface ] ethernet interface [ %s ] was not found. Exiting since this is required for both l2 and l3 modes.", ctx.String("host-interface"))
+	}
+	ipVlanEthIface = ctx.String("host-interface")
+
+	// lower bound of v4 MTU is 68-bytes per rfc791
+	if ctx.Int("mtu") >= minMTU {
+		defaultMTU = ctx.Int("mtu")
+	} else {
+		log.Fatalf("The MTU value passed [ %d ] must be greater then [ %d ] bytes per rfc791", ctx.Int("mtu"), minMTU)
+	}
+
 	// Parse the container IP subnet
-	containerGW, cidr, err := net.ParseCIDR(FlagSubnet.Value)
+	containerGW, cidr, err := net.ParseCIDR(ctx.String("ipvlan-subnet"))
 	if err != nil {
 		log.Fatalf("Error parsing cidr from the subnet flag provided [ %s ]: %s", FlagSubnet, err)
 	}
-	// Bind a gateway IP address
-	if FlagGateway.Value != "" {
-		ipGw, _, err := net.ParseCIDR(FlagGateway.Value)
-		if err != nil {
-			log.Errorf("Error parsing a gateway IP from provided  flag [ %s ]: %s", FlagGateway.Value, err)
+
+	// For ipvlan L2 mode a gateway IP address is used just like any other
+	// normal L2 domain. If no gateway is specified, we attempt to guess using
+	// the first usable IP on the container subnet from the CLI argument or from
+	// the defaultSubnet "192.168.1.0/24" which results in a gatway of "192.168.1.1".
+	switch ctx.String("mode") {
+	case ipVlanL2:
+		ipVlanMode = ipVlanL2
+		if ctx.String("gateway") != "" {
+			// bind the container gateway to the IP passed from the CLI
+			cliGateway, _, err := net.ParseCIDR(ctx.String("gateway"))
+			if err != nil {
+				log.Fatalf("The IP passed with the [ gateway ] flag [ %s ] was not a valid address: %s", FlagGateway.Value, err)
+			}
+			containerGW = cliGateway
+		} else {
+			// if no gateway was passed, guess the first valid address on the container subnet
+			containerGW = ipIncrement(containerGW)
 		}
-		containerGW = ipGw
-	} else {
-		containerGW = ipIncrement(containerGW)
+	case ipVlanL3:
+		// IPVlan simply needs the container interface for its
+		// default route target since only unicast is allowed <3
+		ipVlanMode = ipVlanL3
+		containerGW = nil
+	default:
+		log.Fatalf("Invalid IPVlan mode supplied [ %s ]. IPVlan has two modes: [ %s ] or [%s ]", ctx.String("mode"), ipVlanL2, ipVlanL3)
 	}
+
 	pluginOpts := &pluginConfig{
-		mode:            mode,
+		mtu:             defaultMTU,
+		mode:            ipVlanMode,
 		containerSubnet: cidr,
 		gatewayIP:       containerGW,
+		hostIface:       ipVlanEthIface,
 	}
+	log.Debugf("Plugin configuration options are: \n %s", pluginOpts)
+
 	ipAllocator := ipallocator.New()
 	d := &driver{
 		dockerer: dockerer{
@@ -305,15 +344,14 @@ func (driver *driver) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	containerLink := delete.EndpointID[:5]
 
-	log.Infof("Removing unused macvlan link [ %s ]", containerLink)
+	log.Infof("Removing unused link [ %s ]", containerLink)
 	clink, err := netlink.LinkByName(containerLink)
 	if err != nil {
 		log.Warnf("Error looking up link [ %s ] object: [ %v ] error: [ %s ]", clink.Attrs().Name, clink, err)
 	}
 	if err := netlink.LinkDel(clink); err != nil {
-		log.Errorf("unable to delete the Macvlan link [ %s ] on leave: %s", clink, err)
+		log.Errorf("unable to delete the container's link [ %s ] on leave: %s", clink, err)
 	}
-
 }
 
 type endpointInfoReq struct {
@@ -377,7 +415,6 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 	endID := j.EndpointID
 	// unique name while still on the common netns
 	preMoveName := endID[:5]
-	log.Warnf("2  preMoveName -----> [ %s ] ", preMoveName)
 	mode, err := getIpVlanMode(ipVlanMode)
 	if err != nil {
 		log.Errorf("error getting vlan mode [ %v ]: %s", mode, err)
@@ -387,48 +424,69 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Warnf("Error looking up the parent iface [ %s ] error: [ %s ]", ipVlanEthIface, err)
 	}
-	macvlan := &netlink.IPVlan{
+	ipvlan := &netlink.IPVlan{
 		LinkAttrs: netlink.LinkAttrs{
 			Name:        preMoveName,
 			ParentIndex: m.Attrs().Index,
 		},
 		Mode: mode,
 	}
-	if err := netlink.LinkAdd(macvlan); err != nil {
-		log.Warnf("failed to create Macvlan: [ %v ] with the error: %s", macvlan, err)
+	if err := netlink.LinkAdd(ipvlan); err != nil {
+		log.Warnf("failed to create the netlink link: [ %v ] with the error: %s", ipvlan, err)
 	}
-	log.Infof("Created IPVlan port of: [ %s ] and mode: [ %s ]", macvlan.Name, ipVlanMode)
+	log.Infof("Created IPVlan port of: [ %s ] and mode: [ %s ]", ipvlan.Name, ipVlanMode)
 
-	if err := netlink.LinkSetMTU(macvlan, defaultMTU); err != nil {
-		log.Errorf("Error setting the MTU [ %d ] for link [ %s ]: %s", defaultMTU, macvlan.Name, err)
+	if err := netlink.LinkSetMTU(ipvlan, defaultMTU); err != nil {
+		log.Errorf("Error setting the MTU [ %d ] for link [ %s ]: %s", defaultMTU, ipvlan.Name, err)
 	}
-
 	// SrcName gets renamed to DstPrefix on the container iface
 	ifname := &iface{
-		SrcName:   macvlan.Name,
+		SrcName:   ipvlan.Name,
 		DstPrefix: containerEthPrefix,
 		ID:        0,
 	}
-	res := &joinResponse{
-		InterfaceNames: []*iface{ifname},
-		//		Gateway:        gatewayIP,
-	}
-	// Add a connected Route
-	connectedRoute := &staticRoute{
-		Destination: driver.pluginConfig.containerSubnet.String(),
-		RouteType:   types.CONNECTED,
-		NextHop:     "",
-		InterfaceID: 0,
-	}
-	// Add a default Route
-	defaultRoute := &staticRoute{
-		Destination: defaultRoute,
-		RouteType:   types.CONNECTED,
-		NextHop:     "",
-		InterfaceID: 0,
-	}
-	res.StaticRoutes = []*staticRoute{connectedRoute, defaultRoute}
+	res := &joinResponse{}
 
+	// L2 ipvlan needs an explicit IP for a default GW in the container netns
+	if ipVlanMode == ipVlanL2 {
+		res = &joinResponse{
+			InterfaceNames: []*iface{ifname},
+			Gateway:        driver.pluginConfig.gatewayIP.String(),
+		}
+		// Add a connected route inside the container namespace
+		connectedRoute := &staticRoute{
+			Destination: driver.pluginConfig.containerSubnet.String(),
+			RouteType:   types.CONNECTED,
+			NextHop:     "",
+			InterfaceID: 0,
+		}
+		res.StaticRoutes = []*staticRoute{connectedRoute}
+		objectResponse(w, res)
+	}
+
+	// ipvlan L3 mode doesnt need an IP for a default GW, just an iface dex.
+	if ipVlanMode == ipVlanL3 {
+		res = &joinResponse{
+			InterfaceNames: []*iface{ifname},
+		}
+		// Add a connected Route
+		connectedRoute := &staticRoute{
+			Destination: driver.pluginConfig.containerSubnet.String(),
+			RouteType:   types.CONNECTED,
+			NextHop:     "",
+			InterfaceID: 0,
+		}
+		// Add a default route of only the interface inside the container
+		defaultRoute := &staticRoute{
+			Destination: defaultRoute,
+			RouteType:   types.CONNECTED,
+			NextHop:     "",
+			InterfaceID: 0,
+		}
+		res.StaticRoutes = []*staticRoute{connectedRoute, defaultRoute}
+	}
+
+	// Send the response to libnetwork
 	objectResponse(w, res)
 	log.Debugf("Join endpoint %s:%s to %s", j.NetworkID, j.EndpointID, j.SandboxKey)
 }
@@ -470,4 +528,14 @@ func (driver *driver) natOut() error {
 		}
 	}
 	return nil
+}
+
+// return string representation of pluginConfig for debugging
+func (d *pluginConfig) String() string {
+	str := fmt.Sprintf(" container subnet: [%s],\n", d.containerSubnet.String())
+	str = str + fmt.Sprintf("  container gateway: [%s],\n", d.gatewayIP.String())
+	str = str + fmt.Sprintf("  host interface: [%s],\n", d.hostIface)
+	str = str + fmt.Sprintf("  mmtu: [%d],\n", d.mtu)
+	str = str + fmt.Sprintf("  ipvlan mode: [%s]", d.mode)
+	return str
 }

@@ -1,4 +1,3 @@
 #!/bin/sh
-
-touch /usr/share/docker/plugins/ovs.sock
+# Not functional yet
 docker-compose up -d
