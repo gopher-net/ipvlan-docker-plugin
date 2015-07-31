@@ -12,14 +12,14 @@ import (
 const (
 	version      = "0.1"
 	ipvlanSocket = "ipvlan.sock"
-	pluginPath   = "/usr/share/docker/plugins/"
+	pluginPath   = "/run/docker/plugins/"
 )
 
 func main() {
 
 	var flagSocket = cli.StringFlag{
 		Name:  "socket, s",
-		Value: ipvlanSocket, // Move spec file to /run/docker/plugins/ per docker PR #13951
+		Value: ipvlanSocket,
 		Usage: "listening unix socket",
 	}
 	var flagDebug = cli.BoolFlag{
