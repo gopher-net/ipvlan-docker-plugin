@@ -6,16 +6,16 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strconv"
+	"strings"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
 	"github.com/docker/libnetwork/ipallocator"
 	"github.com/docker/libnetwork/iptables"
-	"github.com/docker/libnetwork/types"
 	"github.com/gorilla/mux"
 	"github.com/samalba/dockerclient"
 	"github.com/vishvananda/netlink"
+	"github.com/docker/libnetwork/types"
 )
 
 const (
@@ -293,9 +293,10 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		errorResponsef(w, "No such network %s", netID)
 		return
 	}
+	log.Debugf("The container subnet for this context is [ %s ]", driver.pluginConfig.containerSubnet.String())
 	// Request an IP address from libnetwork based on the cidr scope
 	// TODO: Add a user defined static ip addr option
-	allocatedIP, err := driver.ipAllocator.RequestIP(driver.cidr, nil)
+	allocatedIP, err := driver.ipAllocator.RequestIP(driver.pluginConfig.containerSubnet, nil)
 	if err != nil || allocatedIP == nil {
 		log.Errorf("Unable to obtain an IP address from libnetwork ipam: %s", err)
 		errorResponsef(w, "%s", err)
@@ -304,10 +305,11 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	// generate a mac address for the pending container
 	mac := makeMac(allocatedIP)
 	// Have to convert container IP to a string ip/mask format
-	_, containerMask := driver.cidr.Mask.Size()
-	containerAddress := allocatedIP.String() + "/" + strconv.Itoa(containerMask)
-	log.Infof("Allocated container IP is: [ %s ]", allocatedIP.String())
+	bridgeMask := strings.Split(driver.pluginConfig.containerSubnet.String(), "/")
+	containerAddress := allocatedIP.String() + "/" + bridgeMask[1]
 
+	log.Infof("Allocated container IP: [ %s ]", containerAddress)
+	
 	respIface := &iface{
 		Address:    containerAddress,
 		MacAddress: mac,
@@ -436,9 +438,9 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Infof("Created IPVlan port of: [ %s ] and mode: [ %s ]", ipvlan.Name, ipVlanMode)
 
-	if err := netlink.LinkSetMTU(ipvlan, defaultMTU); err != nil {
-		log.Errorf("Error setting the MTU [ %d ] for link [ %s ]: %s", defaultMTU, ipvlan.Name, err)
-	}
+//	if err := netlink.LinkSetMTU(ipvlan, defaultMTU); err != nil {
+//		log.Errorf("Error setting the MTU [ %d ] for link [ %s ]: %s", defaultMTU, ipvlan.Name, err)
+//	}
 	// SrcName gets renamed to DstPrefix on the container iface
 	ifname := &iface{
 		SrcName:   ipvlan.Name,
@@ -453,28 +455,13 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 			InterfaceNames: []*iface{ifname},
 			Gateway:        driver.pluginConfig.gatewayIP.String(),
 		}
-		// Add a connected route inside the container namespace
-		connectedRoute := &staticRoute{
-			Destination: driver.pluginConfig.containerSubnet.String(),
-			RouteType:   types.CONNECTED,
-			NextHop:     "",
-			InterfaceID: 0,
-		}
-		res.StaticRoutes = []*staticRoute{connectedRoute}
-		objectResponse(w, res)
+		defer objectResponse(w, res)
 	}
 
 	// ipvlan L3 mode doesnt need an IP for a default GW, just an iface dex.
 	if ipVlanMode == ipVlanL3 {
 		res = &joinResponse{
 			InterfaceNames: []*iface{ifname},
-		}
-		// Add a connected Route
-		connectedRoute := &staticRoute{
-			Destination: driver.pluginConfig.containerSubnet.String(),
-			RouteType:   types.CONNECTED,
-			NextHop:     "",
-			InterfaceID: 0,
 		}
 		// Add a default route of only the interface inside the container
 		defaultRoute := &staticRoute{
@@ -483,7 +470,7 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 			NextHop:     "",
 			InterfaceID: 0,
 		}
-		res.StaticRoutes = []*staticRoute{connectedRoute, defaultRoute}
+		res.StaticRoutes = []*staticRoute{defaultRoute}
 	}
 
 	// Send the response to libnetwork
