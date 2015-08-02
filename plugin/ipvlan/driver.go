@@ -25,6 +25,8 @@ const (
 	ipVlanL2           = "l2"
 	ipVlanL3           = "l3"
 	minMTU             = 68
+	defaultMTU             = 1500
+	TxQueueLen = 0
 )
 
 type ipvlanType netlink.IPVlanMode
@@ -63,15 +65,21 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not connect to docker: %s", err)
 	}
+	if ctx.String("host-interface") == "" {
+		log.Fatalf("Required flag [ host-interface ] that is used for off box communication was not defined. Example: --host-interface=eth1")
+	}
+	ipVlanEthIface = ctx.String("host-interface")
+
 	// bind CLI opts to the user config struct
 	if ok := validateHostIface(ctx.String("host-interface")); !ok {
 		log.Fatalf("Requird field [ host-interface ] ethernet interface [ %s ] was not found. Exiting since this is required for both l2 and l3 modes.", ctx.String("host-interface"))
 	}
-	ipVlanEthIface = ctx.String("host-interface")
 
 	// lower bound of v4 MTU is 68-bytes per rfc791
-	if ctx.Int("mtu") >= minMTU {
-		defaultMTU = ctx.Int("mtu")
+	if ctx.Int("mtu") <= 0 {
+		cliMTU = defaultMTU
+	} else if ctx.Int("mtu") >= minMTU {
+		cliMTU = ctx.Int("mtu")
 	} else {
 		log.Fatalf("The MTU value passed [ %d ] must be greater then [ %d ] bytes per rfc791", ctx.Int("mtu"), minMTU)
 	}
@@ -91,7 +99,7 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 		ipVlanMode = ipVlanL2
 		if ctx.String("gateway") != "" {
 			// bind the container gateway to the IP passed from the CLI
-			cliGateway, _, err := net.ParseCIDR(ctx.String("gateway"))
+			cliGateway := net.ParseIP(ctx.String("gateway"))
 			if err != nil {
 				log.Fatalf("The IP passed with the [ gateway ] flag [ %s ] was not a valid address: %s", FlagGateway.Value, err)
 			}
@@ -110,13 +118,14 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 	}
 
 	pluginOpts := &pluginConfig{
-		mtu:             defaultMTU,
+		mtu:             cliMTU,
 		mode:            ipVlanMode,
 		containerSubnet: cidr,
 		gatewayIP:       containerGW,
 		hostIface:       ipVlanEthIface,
 	}
-	log.Debugf("Plugin configuration options are: \n %s", pluginOpts)
+	// Leaving as info for now to stdout the plugin config
+	log.Infof("Plugin configuration options are: \n %s", pluginOpts)
 
 	ipAllocator := ipallocator.New()
 	d := &driver{
@@ -422,25 +431,30 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 		log.Errorf("error getting vlan mode [ %v ]: %s", mode, err)
 		return
 	}
-	m, err := netlink.LinkByName(ipVlanEthIface)
+
+	hostEth, err := netlink.LinkByName(ipVlanEthIface)
 	if err != nil {
 		log.Warnf("Error looking up the parent iface [ %s ] error: [ %s ]", ipVlanEthIface, err)
 	}
 	ipvlan := &netlink.IPVlan{
 		LinkAttrs: netlink.LinkAttrs{
 			Name:        preMoveName,
-			ParentIndex: m.Attrs().Index,
+			ParentIndex: hostEth.Attrs().Index,
+			TxQLen:      TxQueueLen,
 		},
 		Mode: mode,
 	}
 	if err := netlink.LinkAdd(ipvlan); err != nil {
-		log.Warnf("failed to create the netlink link: [ %v ] with the error: %s", ipvlan, err)
+		log.Warnf("failed to create the netlink link: [ %v ] with the "+
+		"error: %s Note: a parent index cannot be link to both macvlan "+
+		"and ipvlan simultaneously. A new parent index is required", ipvlan, err)
 	}
 	log.Infof("Created IPVlan port of: [ %s ] and mode: [ %s ]", ipvlan.Name, ipVlanMode)
 
-//	if err := netlink.LinkSetMTU(ipvlan, defaultMTU); err != nil {
-//		log.Errorf("Error setting the MTU [ %d ] for link [ %s ]: %s", defaultMTU, ipvlan.Name, err)
-//	}
+	if err := netlink.LinkSetMTU(ipvlan, defaultMTU); err != nil {
+		log.Errorf("Error setting the MTU [ %d ] for link [ %s ]: %s", defaultMTU, ipvlan.Name, err)
+	}
+
 	// SrcName gets renamed to DstPrefix on the container iface
 	ifname := &iface{
 		SrcName:   ipvlan.Name,
