@@ -12,33 +12,33 @@ ipvlan is a lightweight L2 and L3 network implementation that does not require t
 ### QuickStart Instructions
 
 
-1. Start Docker with the following. **TODO:** How to specify the plugin socket without having to pass a bridge name since ipvlan/ipvlan dont use traditional bridges. This example is running docker in the foreground so you can see the logs realtime.
+1. Start Docker with the following. **TODO:** How to specify the plugin socket without having to pass a bridge name `foo` since ipvlan/macvlan do not use traditional bridges. This example is running docker in the foreground so you can see the logs realtime.
 
-    ```
+```
     docker -d --default-network=ipvlan:foo`
-    ```
+```
 
 2. Download the plugin binary. A pre-compiled x86_64 binary can be downloaded from the [binaries](https://github.com/gopher-net/ipvlan-docker-plugin/binaries) directory.
 
-	```
+```
 	$ wget -O ./ipvlan-docker-plugin https://github.com/gopher-net/ipvlan-docker-plugin/binaries/ipvlan-docker-plugin-0.1-Linux-x86_64
 	$ chmod +x ipvlan-docker-plugin
-	```
+```
 
 3. In a new window, start the plugin with the following. Replace the values with the appropriate subnet and gateway to match the network the docker host is attached to. In the following the nic `eth1` is attached to a network segment with other hosts on the `192.168.1.0/24` subnet along with the gateway `192.168.1.1`.
 
 Here is the `eth1` ip configuration to make help ensure the role of the parent ipvlan interface is clear:
 
-    ```
+```
     $ ip add show eth1
     3: eth1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000
         link/ether 00:50:56:27:87:2f brd ff:ff:ff:ff:ff:ff
         inet 192.168.1.254/24 brd 192.168.1.255 scope global eth1
-    ```
+```
     
 Start the driver with:
 
-    ```
+```
     	$ ./ipvlan-docker-plugin \
     	        --gateway=192.168.1.1 \
     	        --ipvlan-subnet=192.168.1.0/24 \
@@ -47,7 +47,7 @@ Start the driver with:
     # Or in one line:
 
 	$ ./ipvlan-docker-plugin --host-interface eth1 -d --mode=l2 --gateway=192.168.1.1  --ipvlan-subnet=192.168.1.0/24
-    ```
+```
 
     for debugging, or just extra logs from the sausage factory, add the debug flag `./ipvlan-docker-plugin -d`.
 
@@ -81,9 +81,8 @@ $ ./ipvlan-docker-plugin \
 go run main.go --host-interface eth1 -d --mode l3 --ipvlan-subnet=10.1.1.0/24
 ```
 
-Run Docker with:
+Lastly start up some containers and check reachability:
 
-- Ignore `foo`. It is a default bridge but irrelavant since ipvlan doesn't use a traditional bridge but lighter weight pseudo bridges in the case of l2 mode. l3 mode requires a static route in the default ns that points to the container netns which isnt implemnted here yet.
 ```
-docker -d -D --default-network=ipvlan:foo
+docker run -i -t --rm ubuntu
 ```
