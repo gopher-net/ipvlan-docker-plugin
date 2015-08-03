@@ -9,7 +9,7 @@ ipvlan is a lightweight L2 and L3 network implementation that does not require t
 1. Install the Docker experimental binary from the instructions at: [Docker Experimental](https://github.com/docker/docker/tree/master/experimental). (stop other docker instances)
 	- Quick Experimental Install: `wget -qO- https://experimental.docker.com/ | sh`
 
-### QuickStart Instructions
+### QuickStart Instructions (L2 Mode)
 
 
 1. Start Docker with the following. **TODO:** How to specify the plugin socket without having to pass a bridge name `foo` since ipvlan/macvlan do not use traditional bridges. This example is running docker in the foreground so you can see the logs realtime.
@@ -36,17 +36,17 @@ Here is the `eth1` ip configuration to make help ensure the role of the parent i
         inet 192.168.1.254/24 brd 192.168.1.255 scope global eth1
 ```
     
-Start the driver with:
+Start the driver in L2 mode:
 
 ```
     	$ ./ipvlan-docker-plugin \
     	        --gateway=192.168.1.1 \
     	        --ipvlan-subnet=192.168.1.0/24 \
     	        --host-interface=eth1 \
-    	         -mode=bridge
+    	        --mode=l2
     # Or in one line:
 
-	$ ./ipvlan-docker-plugin --host-interface eth1 -d --mode=l2 --gateway=192.168.1.1  --ipvlan-subnet=192.168.1.0/24
+	$ ./ipvlan-docker-plugin --host-interface=eth1 -d --mode=l2 --gateway=192.168.1.1  --ipvlan-subnet=192.168.1.0/24
 ```
 
     for debugging, or just extra logs from the sausage factory, add the debug flag `./ipvlan-docker-plugin -d`.
@@ -55,21 +55,9 @@ Start the driver with:
 
     * Or use the script `release-the-whales.sh` in the `scripts/` directory to launch a bunch of lightweight busybox instances to see how well the plugin scales for you. It can also serve as temporary integration testing until we get CI setup. See the comments in the script for usage. Keep in mind, the subnet defined in `cli.go` is the temporarily hardcoded network address `192.168.1.0/24` and will hand out addresses starting at `192.168.1.2`. This is very temporary until we bind CLI options to the driver data struct.
 
+### Example L3 Mode 
 
-Example L2 Mode:
-
-```
-$ ./ipvlan-docker-plugin \
-        --host-interface eth1 \
-        --gateway=192.168.1.1 \
-        --ipvlan-subnet=192.168.1.0/24 \
-        --mode=l2
-
-# Or with Go using:
-go run main.go -d --host-interface eth1 -d --mode l2 --gateway=192.168.1.1  --ipvlan-subnet=192.168.1.0/24
-```
-
-Example L3 Mode (**Note:** L3 mode needs to use a **different** subnet then the parent interface. It also requires a static route in the global namespace that is not yet implemented):
+**Note:** L3 mode needs to use a **different** subnet then the parent interface. It also requires a static route in the global namespace that is not yet implemented. You can manually add it into the global namespace with something like `ip route add 10.1.1.0/24 eth1`
 
 ```
 $ ./ipvlan-docker-plugin \
