@@ -25,7 +25,18 @@ ipvlan is a lightweight L2 and L3 network implementation that does not require t
 	$ chmod +x ipvlan-docker-plugin
 	```
 
-3. In a new window, start the plugin with the following. Replace the values with the appropriate subnet and gateway to match the network the docker host is attached to.
+3. In a new window, start the plugin with the following. Replace the values with the appropriate subnet and gateway to match the network the docker host is attached to. In the following the nic `eth1` is attached to a network segment with other hosts on the `192.168.1.0/24` subnet along with the gateway `192.168.1.1`.
+
+Here is the `eth1` ip configuration to make help ensure the role of the parent ipvlan interface is clear:
+
+    ```
+    $ ip add show eth1
+    3: eth1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000
+        link/ether 00:50:56:27:87:2f brd ff:ff:ff:ff:ff:ff
+        inet 192.168.1.254/24 brd 192.168.1.255 scope global eth1
+    ```
+    
+Start the driver with:
 
     ```
     	$ ./ipvlan-docker-plugin \
