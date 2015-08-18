@@ -1,7 +1,6 @@
 package ipvlan
 
 import (
-	"bytes"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -16,21 +15,6 @@ func makeMac(ip net.IP) string {
 	hw[1] = 0x42
 	copy(hw[2:], ip.To4())
 	return hw.String()
-}
-
-// getLines parses input into lines and strips away comments.
-func getLines(input []byte, commentMarker []byte) [][]byte {
-	lines := bytes.Split(input, []byte("\n"))
-	var output [][]byte
-	for _, currentLine := range lines {
-		var commentIndex = bytes.Index(currentLine, commentMarker)
-		if commentIndex == -1 {
-			output = append(output, currentLine)
-		} else {
-			output = append(output, currentLine[:commentIndex])
-		}
-	}
-	return output
 }
 
 func readResolvConf() ([]byte, error) {
@@ -89,7 +73,7 @@ func ipIncrement(networkAddr net.IP) net.IP {
 	return networkAddr
 }
 
-func getIpVlanMode(s string) (netlink.IPVlanMode, error) {
+func getIPVlanMode(s string) (netlink.IPVlanMode, error) {
 	switch s {
 	case "", "l2":
 		return netlink.IPVLAN_MODE_L2, nil

@@ -12,10 +12,10 @@ import (
 	"github.com/codegangsta/cli"
 	"github.com/docker/libnetwork/ipallocator"
 	"github.com/docker/libnetwork/iptables"
+	"github.com/docker/libnetwork/types"
 	"github.com/gorilla/mux"
 	"github.com/samalba/dockerclient"
 	"github.com/vishvananda/netlink"
-	"github.com/docker/libnetwork/types"
 )
 
 const (
@@ -25,8 +25,8 @@ const (
 	ipVlanL2           = "l2"
 	ipVlanL3           = "l3"
 	minMTU             = 68
-	defaultMTU             = 1500
-	TxQueueLen = 0
+	defaultMTU         = 1500
+	TxQueueLen         = 0
 )
 
 type ipvlanType netlink.IPVlanMode
@@ -234,18 +234,37 @@ func (driver *driver) createNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	driver.network = create.NetworkID
-
-	cidr := driver.pluginConfig.containerSubnet
-	driver.cidr = cidr
+	containerCidr := driver.pluginConfig.containerSubnet
+	driver.cidr = containerCidr
 	// Todo: check for ipam errors
-	driver.ipAllocator.RequestIP(cidr, nil)
+	driver.ipAllocator.RequestIP(containerCidr, nil)
 
 	emptyResponse(w)
 
+	// TODO: sort out what rules are in place by default vs. plugin
 	err = driver.natOut()
 	if err != nil {
 		log.Warnf("error setting up outboud nat: %s", err)
 	}
+
+	if ipVlanMode == ipVlanL3 {
+		log.Debugf("Adding route for the local ipvlan subnet [ %s ] in the default namespace using the specified host interface [ %s]", containerCidr.String(), ipVlanEthIface)
+		ipvlanParent, err := netlink.LinkByName(ipVlanEthIface)
+		// Add a route in the default NS to point to the IPVlan namespace subnet
+		addRouteIface(containerCidr, ipvlanParent)
+		if err != nil {
+			log.Debugf("a problem occurred adding the container subnet default namespace route", err)
+		}
+	}
+}
+
+// addRouteIface required for L3 mode adds a link scoped route in the default ns
+func addRouteIface(ipVlanL3Network *net.IPNet, iface netlink.Link) error {
+	return netlink.RouteAdd(&netlink.Route{
+		LinkIndex: iface.Attrs().Index,
+		Scope:     netlink.SCOPE_LINK,
+		Dst:       ipVlanL3Network,
+	})
 }
 
 type networkDelete struct {
@@ -267,6 +286,15 @@ func (driver *driver) deleteNetwork(w http.ResponseWriter, r *http.Request) {
 	driver.network = ""
 	emptyResponse(w)
 	log.Infof("Destroy network %s", delete.NetworkID)
+}
+
+// delRouteIface clean up the required L3 mode default ns route
+func delRouteIface(ipVlanL3Network *net.IPNet, iface netlink.Link) error {
+	return netlink.RouteDel(&netlink.Route{
+		LinkIndex: iface.Attrs().Index,
+		Scope:     netlink.SCOPE_LINK,
+		Dst:       ipVlanL3Network,
+	})
 }
 
 type endpointCreate struct {
@@ -318,7 +346,7 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	containerAddress := allocatedIP.String() + "/" + bridgeMask[1]
 
 	log.Infof("Allocated container IP: [ %s ]", containerAddress)
-	
+
 	respIface := &iface{
 		Address:    containerAddress,
 		MacAddress: mac,
@@ -426,7 +454,7 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 	endID := j.EndpointID
 	// unique name while still on the common netns
 	preMoveName := endID[:5]
-	mode, err := getIpVlanMode(ipVlanMode)
+	mode, err := getIPVlanMode(ipVlanMode)
 	if err != nil {
 		log.Errorf("error getting vlan mode [ %v ]: %s", mode, err)
 		return
@@ -446,8 +474,8 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := netlink.LinkAdd(ipvlan); err != nil {
 		log.Warnf("failed to create the netlink link: [ %v ] with the "+
-		"error: %s Note: a parent index cannot be link to both macvlan "+
-		"and ipvlan simultaneously. A new parent index is required", ipvlan, err)
+			"error: %s Note: a parent index cannot be link to both macvlan "+
+			"and ipvlan simultaneously. A new parent index is required", ipvlan, err)
 	}
 	log.Infof("Created IPVlan port of: [ %s ] and mode: [ %s ]", ipvlan.Name, ipVlanMode)
 

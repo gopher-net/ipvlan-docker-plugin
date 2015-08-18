@@ -34,7 +34,7 @@ func main() {
 		flagDebug,
 		flagSocket,
 		ipvlan.FlagIpvlanEthIface,
-		ipvlan.FlagIpVlanMode,
+		ipvlan.FlagIPVlanMode,
 		ipvlan.FlagGateway,
 		ipvlan.FlagSubnet,
 		ipvlan.FlagMtu,
