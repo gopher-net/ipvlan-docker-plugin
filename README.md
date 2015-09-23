@@ -9,6 +9,16 @@ ipvlan is a lightweight L2 and L3 network implementation that does not require t
 1. Install the Docker experimental binary from the instructions at: [Docker Experimental](https://github.com/docker/docker/tree/master/experimental). (stop other docker instances)
 	- Quick Experimental Install: `wget -qO- https://experimental.docker.com/ | sh`
 
+2. The kernel version for ipvlan needs to be 4.0+. I have tested this with v4.2. Here is an example upgrade:
+
+```
+wget http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.2-rc2-unstable/linux-headers-4.2.0-040200rc2_4.2.0-040200rc2.201507160938_all.deb
+wget http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.2-rc2-unstable/linux-headers-4.2.0-040200rc2-generic_4.2.0-040200rc2.201507160938_amd64.deb
+wget http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.2-rc2-unstable/linux-image-4.2.0-040200rc2-generic_4.2.0-040200rc2.201507160938_amd64.deb
+sudo dpkg -i linux-headers-4.2*.deb linux-image-4.2*.deb
+sudo reboot
+```
+
 ### QuickStart Instructions (L2 Mode)
 
 
@@ -39,17 +49,18 @@ Here is the `eth1` ip configuration to make help ensure the role of the parent i
 Start the driver in L2 mode:
 
 ```
-    	$ ./ipvlan-docker-plugin \
-    	        --gateway=192.168.1.1 \
-    	        --ipvlan-subnet=192.168.1.0/24 \
-    	        --host-interface=eth1 \
-    	        --mode=l2
-    # Or in one line:
+$ ./ipvlan-docker-plugin \
+    --gateway=192.168.1.1 \
+    --ipvlan-subnet=192.168.1.0/24 \
+    --host-interface=eth1 \
+    --mode=l2
 
-	$ ./ipvlan-docker-plugin --host-interface=eth1 -d --mode=l2 --gateway=192.168.1.1  --ipvlan-subnet=192.168.1.0/24
+# Or in one line:
+
+$ ./ipvlan-docker-plugin --host-interface=eth1 -d --mode=l2 --gateway=192.168.1.1  --ipvlan-subnet=192.168.1.0/24
 ```
 
-    for debugging, or just extra logs from the sausage factory, add the debug flag `./ipvlan-docker-plugin -d`.
+- For debugging, or just extra logs from the sausage factory, add the debug flag `./ipvlan-docker-plugin -d`.
 
 4. Run some containers and verify they can ping one another with `docker run -it --rm busybox` or `docker run -it --rm ubuntu` etc, any other docker images you prefer. Alternatively,`docker run -itd busybox`
 
@@ -74,3 +85,32 @@ Lastly start up some containers and check reachability:
 ```
 docker run -i -t --rm ubuntu
 ```
+
+### Issues
+
+The version of `godbus/dbus` has issues with `vishvananda/netlink` that will lead to this error at build time:
+
+```
+../../../docker/libnetwork/iptables/firewalld.go:75: cannot use c.sysconn.Object(dbusInterface, dbus.ObjectPath(dbusPath)) (type dbus.BusObject) as type *dbus.Object in assignment: need type assertion
+```
+
+- As @Orivej graciously pointed out in issue #5:
+
+"You need a stable godbus that you can probably get with:"
+```
+cd $GOPATH/src/github.com/godbus/dbus
+git checkout v2
+```
+
+ - Another option would be to use godep and sync your library with libnetworks.
+
+```
+go get github.com/tools/godep
+git clone https://github.com/docker/libnetwork.git
+cd libnetwork
+godep restore
+```
+
+Godep here would fix it if no one has any objections will add it.
+
+
