@@ -145,6 +145,7 @@ func (driver *driver) Listen(socket string) error {
 
 	router.Methods("GET").Path("/status").HandlerFunc(driver.status)
 	router.Methods("POST").Path("/Plugin.Activate").HandlerFunc(driver.handshake)
+	router.Methods("POST").Path("/NetworkDriver.GetCapabilities").HandlerFunc(driver.capabilities)
 
 	handleMethod := func(method string, h http.HandlerFunc) {
 		router.Methods("POST").Path(fmt.Sprintf("/%s.%s", MethodReceiver, method)).HandlerFunc(h)
@@ -170,7 +171,7 @@ func (driver *driver) Listen(socket string) error {
 }
 
 func notFound(w http.ResponseWriter, r *http.Request) {
-	log.Warnf("[plugin] Not found: %+v", r)
+	log.Warnf("plugin Not found: [ %+v ]", r)
 	http.NotFound(w, r)
 }
 
@@ -210,6 +211,22 @@ func (driver *driver) handshake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Debug("Handshake completed")
+}
+
+type capabilitiesResp struct {
+	Scope string
+}
+
+func (driver *driver) capabilities(w http.ResponseWriter, r *http.Request) {
+	err := json.NewEncoder(w).Encode(&capabilitiesResp{
+		"local",
+	})
+	if err != nil {
+		log.Fatalf("capabilities encode: %s", err)
+		sendError(w, "encode error", http.StatusInternalServerError)
+		return
+	}
+	log.Debug("Capabilities exchange complete")
 }
 
 func (driver *driver) status(w http.ResponseWriter, r *http.Request) {
@@ -300,20 +317,27 @@ func delRouteIface(ipVlanL3Network *net.IPNet, iface netlink.Link) error {
 type endpointCreate struct {
 	NetworkID  string
 	EndpointID string
-	Interfaces []*iface
+	Interface  *EndpointInterface
 	Options    map[string]interface{}
 }
 
-type iface struct {
-	ID         int
-	SrcName    string
-	DstPrefix  string
-	Address    string
-	MacAddress string
+
+// EndpointInterface represents an interface endpoint.
+type EndpointInterface struct {
+	Address     string
+	AddressIPv6 string
+	MacAddress  string
+}
+
+
+type InterfaceName struct {
+	SrcName   string
+	DstName   string
+	DstPrefix string
 }
 
 type endpointResponse struct {
-	Interfaces []*iface
+	Interface EndpointInterface
 }
 
 func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -347,13 +371,14 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	log.Infof("Allocated container IP: [ %s ]", containerAddress)
 
-	respIface := &iface{
+	respIface := &EndpointInterface{
 		Address:    containerAddress,
 		MacAddress: mac,
 	}
 	resp := &endpointResponse{
-		Interfaces: []*iface{respIface},
+		Interface: *respIface,
 	}
+	log.Debugf("Create endpoint response: %+v", resp)
 	objectResponse(w, resp)
 	log.Debugf("Create endpoint %s %+v", endID, resp)
 }
@@ -377,7 +402,7 @@ func (driver *driver) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	// ReleaseIP releases an ip back to a network
 	if err := driver.ipAllocator.ReleaseIP(driver.cidr, driver.cidr.IP); err != nil {
-		log.Warnf("error releasing IP: %s", err)
+		log.Warnf("Error releasing IP: %s", err)
 	}
 	log.Debugf("Delete endpoint %s", delete.EndpointID)
 
@@ -414,11 +439,9 @@ func (driver *driver) infoEndpoint(w http.ResponseWriter, r *http.Request) {
 }
 
 type joinInfo struct {
-	InterfaceNames []*iface
+	InterfaceName  *InterfaceName
 	Gateway        string
 	GatewayIPv6    string
-	HostsPath      string
-	ResolvConfPath string
 }
 
 type join struct {
@@ -432,15 +455,12 @@ type staticRoute struct {
 	Destination string
 	RouteType   int
 	NextHop     string
-	InterfaceID int
 }
 
 type joinResponse struct {
-	HostsPath      string
-	ResolvConfPath string
-	Gateway        string
-	InterfaceNames []*iface
-	StaticRoutes   []*staticRoute
+	Gateway       string
+	InterfaceName InterfaceName
+	StaticRoutes  []*staticRoute
 }
 
 func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -459,7 +479,7 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 		log.Errorf("error getting vlan mode [ %v ]: %s", mode, err)
 		return
 	}
-
+	// Get the link for the master index (Example: the docker host eth iface)
 	hostEth, err := netlink.LinkByName(ipVlanEthIface)
 	if err != nil {
 		log.Warnf("Error looking up the parent iface [ %s ] error: [ %s ]", ipVlanEthIface, err)
@@ -473,28 +493,30 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 		Mode: mode,
 	}
 	if err := netlink.LinkAdd(ipvlan); err != nil {
-		log.Warnf("failed to create the netlink link: [ %v ] with the "+
+		log.Warnf("Failed to create the netlink link: [ %v ] with the "+
 			"error: %s Note: a parent index cannot be link to both macvlan "+
 			"and ipvlan simultaneously. A new parent index is required", ipvlan, err)
 	}
 	log.Infof("Created IPVlan port of: [ %s ] and mode: [ %s ]", ipvlan.Name, ipVlanMode)
-
+	// Set the netlink iface MTU, default is 1500
 	if err := netlink.LinkSetMTU(ipvlan, defaultMTU); err != nil {
 		log.Errorf("Error setting the MTU [ %d ] for link [ %s ]: %s", defaultMTU, ipvlan.Name, err)
 	}
-
+	// Bring the netlink iface up
+	if err := netlink.LinkSetUp(ipvlan); err != nil {
+		log.Warnf("failed to enable the ipvlan netlink link: [ %v ]", ipvlan, err)
+	}
 	// SrcName gets renamed to DstPrefix on the container iface
-	ifname := &iface{
+	ifname := &InterfaceName{
 		SrcName:   ipvlan.Name,
 		DstPrefix: containerEthPrefix,
-		ID:        0,
+//		 ID:        0,
 	}
 	res := &joinResponse{}
-
 	// L2 ipvlan needs an explicit IP for a default GW in the container netns
 	if ipVlanMode == ipVlanL2 {
 		res = &joinResponse{
-			InterfaceNames: []*iface{ifname},
+			InterfaceName: *ifname,
 			Gateway:        driver.pluginConfig.gatewayIP.String(),
 		}
 		defer objectResponse(w, res)
@@ -503,18 +525,17 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 	// ipvlan L3 mode doesnt need an IP for a default GW, just an iface dex.
 	if ipVlanMode == ipVlanL3 {
 		res = &joinResponse{
-			InterfaceNames: []*iface{ifname},
+			InterfaceName: *ifname,
 		}
 		// Add a default route of only the interface inside the container
 		defaultRoute := &staticRoute{
 			Destination: defaultRoute,
 			RouteType:   types.CONNECTED,
 			NextHop:     "",
-			InterfaceID: 0,
 		}
 		res.StaticRoutes = []*staticRoute{defaultRoute}
 	}
-
+	log.Debugf("Join response: %+v", res)
 	// Send the response to libnetwork
 	objectResponse(w, res)
 	log.Debugf("Join endpoint %s:%s to %s", j.NetworkID, j.EndpointID, j.SandboxKey)

@@ -86,15 +86,26 @@ Lastly start up some containers and check reachability:
 docker run -i -t --rm ubuntu
 ```
 
-### Issues
+### Dev and issues
+
+Use [Godep](https://github.com/tools/godep) for dependencies. There is a godbus version that conflicts with vish netlink listed below.
+
+Install and use Godep with the following:
+
+```
+$ go get github.com/tools/godep
+# From inside the plugin directory where the Godep directory is restore the snapshotted dependencies used by libnetwork:
+$ godep restore
+```
 
 The version of `godbus/dbus` has issues with `vishvananda/netlink` that will lead to this error at build time:
 
 ```
-../../../docker/libnetwork/iptables/firewalld.go:75: cannot use c.sysconn.Object(dbusInterface, dbus.ObjectPath(dbusPath)) (type dbus.BusObject) as type *dbus.Object in assignment: need type assertion
+../../../docker/libnetwork/iptables/firewalld.go:75: cannot use c.sysconn.Object(dbusInterface, dbus.ObjectPath(dbusPath)) (type dbus.BusObject) as type *dbus.
+Object in assignment: need type assertion
 ```
 
-- As @Orivej graciously pointed out in issue #5:
+- If you dont want to use godep @Orivej graciously pointed out the godbus dependency in issue #5:
 
 "You need a stable godbus that you can probably get with:"
 ```
@@ -111,6 +122,7 @@ cd libnetwork
 godep restore
 ```
 
-Godep here would fix it if no one has any objections will add it.
+
+
 
 
