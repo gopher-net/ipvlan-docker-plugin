@@ -9,13 +9,13 @@ ipvlan is a lightweight L2 and L3 network implementation that does not require t
 1. Install the Docker experimental binary from the instructions at: [Docker Experimental](https://github.com/docker/docker/tree/master/experimental). (stop other docker instances)
 	- Quick Experimental Install: `wget -qO- https://experimental.docker.com/ | sh`
 
-2. The kernel version for ipvlan needs to be 4.0+. I have tested this with v4.2. Here is an example upgrade:
+2. The kernel version for ipvlan needs to be 4.0+. I have tested this with v4.05. and up. Here is an example tested version and kernel upgrade procedure:
 
 ```
-wget http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.2-rc2-unstable/linux-headers-4.2.0-040200rc2_4.2.0-040200rc2.201507160938_all.deb
-wget http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.2-rc2-unstable/linux-headers-4.2.0-040200rc2-generic_4.2.0-040200rc2.201507160938_amd64.deb
-wget http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.2-rc2-unstable/linux-image-4.2.0-040200rc2-generic_4.2.0-040200rc2.201507160938_amd64.deb
-sudo dpkg -i linux-headers-4.2*.deb linux-image-4.2*.deb
+$ wget http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.3-rc2-unstable/linux-headers-4.3.0-040300rc2_4.3.0-040300rc2.201509201830_all.deb
+$ wget http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.3-rc2-unstable/linux-headers-4.3.0-040300rc2-generic_4.3.0-040300rc2.201509201830_i386.deb
+$ wget http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.3-rc2-unstable/linux-image-4.3.0-040300rc2-generic_4.3.0-040300rc2.201509201830_i386.deb
+sudo dpkg -i linux-headers-4.3*.deb linux-image-4.2*.deb
 sudo reboot
 ```
 
@@ -64,11 +64,13 @@ $ ./ipvlan-docker-plugin --host-interface=eth1 -d --mode=l2 --gateway=192.168.1.
 
 4. Run some containers and verify they can ping one another with `docker run -it --rm busybox` or `docker run -it --rm ubuntu` etc, any other docker images you prefer. Alternatively,`docker run -itd busybox`
 
-    * Or use the script `release-the-whales.sh` in the `scripts/` directory to launch a bunch of lightweight busybox instances to see how well the plugin scales for you. It can also serve as temporary integration testing until we get CI setup. See the comments in the script for usage. Keep in mind, the subnet defined in `cli.go` is the temporarily hardcoded network address `192.168.1.0/24` and will hand out addresses starting at `192.168.1.2`. This is very temporary until we bind CLI options to the driver data struct.
+    * Or use the script `release-the-whales.sh` in the `scripts/` directory to launch a bunch of lightweight busybox instances to see how well the plugin scales for you. It can also serve as temporary integration testing. See the comments in the script for usage. There are some default values in the driver used if no values are specified with the binary or flagged as mandatory. The driver's CLI will tell you what is required and any default values/constructors being used.
 
 ### Example L3 Mode 
 
-**Note:** L3 mode needs to use a **different** subnet then the parent interface. It also requires a static route in the global namespace that is not yet implemented. You can manually add it into the global namespace with something like `ip route add 10.1.1.0/24 eth1`
+**Note:** L3 mode needs to use a **different** subnet then the parent interface. It also requires a static route in the global namespace that is added by the driver but it also requires other hosts to know about the subnet you have tucked away in the container namespace. Out of the box L3 mode will not be able to ping between different hosts without the routes being distributed across all of the hosts. You can manually add it into the global namespace with something like `ip route add 10.1.1.0/24 <x.x.x.x Next-hop IP could be another endpoint or gateway>`. 
+
+If a nerd for networking, take a look at a /32 multi-host driver that is this plugin (IPVlan) plus a BGP daemon to distribute the container host routes (or /24 for example for an entire docker host instead of /32s). The routes get distributed to all other hosts in the cluster using the same distributed system protocol that scales the Internet. The BGP plugin proof of concept is at [nerdalert/bgp-ipvlan-docker](https://github.com/nerdalert/bgp-ipvlan-docker).
 
 ```
 $ ./ipvlan-docker-plugin \
@@ -88,7 +90,7 @@ docker run -i -t --rm ubuntu
 
 ### Dev and issues
 
-Use [Godep](https://github.com/tools/godep) for dependencies. There is a godbus version that conflicts with vish netlink listed below.
+Use [Godep](https://github.com/tools/godep) for dependencies.
 
 Install and use Godep with the following:
 
@@ -98,7 +100,9 @@ $ go get github.com/tools/godep
 $ godep restore
 ```
 
-The version of `godbus/dbus` has issues with `vishvananda/netlink` that will lead to this error at build time:
+ There is a `godbus/dbus` version that conflicts with `vishvananda/netlink` that will lead to this error at build time. This can appear as libnetwork issues when in fact it is 3rd party drivers. Libnetwork also uses Godep for versioning so using those versions would be just as good or even better if keeping with the latest experimental nightly Docker builds:
+
+Example of the godbus error:
 
 ```
 ../../../docker/libnetwork/iptables/firewalld.go:75: cannot use c.sysconn.Object(dbusInterface, dbus.ObjectPath(dbusPath)) (type dbus.BusObject) as type *dbus.
