@@ -321,14 +321,12 @@ type endpointCreate struct {
 	Options    map[string]interface{}
 }
 
-
 // EndpointInterface represents an interface endpoint.
 type EndpointInterface struct {
 	Address     string
 	AddressIPv6 string
 	MacAddress  string
 }
-
 
 type InterfaceName struct {
 	SrcName   string
@@ -407,14 +405,21 @@ func (driver *driver) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 	log.Debugf("Delete endpoint %s", delete.EndpointID)
 
 	containerLink := delete.EndpointID[:5]
-
-	log.Infof("Removing unused link [ %s ]", containerLink)
-	clink, err := netlink.LinkByName(containerLink)
-	if err != nil {
-		log.Warnf("Error looking up link [ %s ] object: [ %v ] error: [ %s ]", clink.Attrs().Name, clink, err)
+	// Check the interface to delete exists to avoid a panic if nil
+	if ok := validateHostIface(containerLink); !ok {
+		log.Errorf("The requested interface to delete [ %s ] was not found on the host.", containerLink)
+		return
 	}
-	if err := netlink.LinkDel(clink); err != nil {
-		log.Errorf("unable to delete the container's link [ %s ] on leave: %s", clink, err)
+	// Get the link handle
+	link, err := netlink.LinkByName(containerLink)
+	if err != nil {
+		log.Errorf("Error looking up link [ %s ] object: [ %v ] error: [ %s ]", link.Attrs().Name, link, err)
+		return
+	}
+	log.Infof("Deleting the unused macvlan link [ %s ] from the removed container", link)
+	// Delete the link
+	if err := netlink.LinkDel(link); err != nil {
+		log.Errorf("unable to delete the Macvlan link [ %s ] on leave: %s", link, err)
 	}
 }
 
@@ -439,9 +444,9 @@ func (driver *driver) infoEndpoint(w http.ResponseWriter, r *http.Request) {
 }
 
 type joinInfo struct {
-	InterfaceName  *InterfaceName
-	Gateway        string
-	GatewayIPv6    string
+	InterfaceName *InterfaceName
+	Gateway       string
+	GatewayIPv6   string
 }
 
 type join struct {
@@ -496,6 +501,8 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 		log.Warnf("Failed to create the netlink link: [ %v ] with the "+
 			"error: %s Note: a parent index cannot be link to both macvlan "+
 			"and ipvlan simultaneously. A new parent index is required", ipvlan, err)
+		log.Warnf("Also check `/var/run/docker/netns/` for orphaned links to unmount and delete, then restart the plugin")
+		log.Warnf("Run this to clean orphaned links 'umount /var/run/docker/netns/* && rm /var/run/docker/netns/*'")
 	}
 	log.Infof("Created IPVlan port of: [ %s ] and mode: [ %s ]", ipvlan.Name, ipVlanMode)
 	// Set the netlink iface MTU, default is 1500
@@ -510,14 +517,14 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 	ifname := &InterfaceName{
 		SrcName:   ipvlan.Name,
 		DstPrefix: containerEthPrefix,
-//		 ID:        0,
+		//		 ID:        0,
 	}
 	res := &joinResponse{}
 	// L2 ipvlan needs an explicit IP for a default GW in the container netns
 	if ipVlanMode == ipVlanL2 {
 		res = &joinResponse{
 			InterfaceName: *ifname,
-			Gateway:        driver.pluginConfig.gatewayIP.String(),
+			Gateway:       driver.pluginConfig.gatewayIP.String(),
 		}
 		defer objectResponse(w, res)
 	}

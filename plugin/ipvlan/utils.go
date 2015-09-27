@@ -84,10 +84,11 @@ func getIPVlanMode(s string) (netlink.IPVlanMode, error) {
 	}
 }
 
+// Check if a netlink interface exists in the default namespace
 func validateHostIface(ifaceStr string) bool {
 	_, err := net.InterfaceByName(ifaceStr)
 	if err != nil {
-		log.Warnf("interface [ %s ] was not found on the host. Please verify that the interface is valid: %s", ifaceStr, err)
+		log.Debugf("The requested interface to delete [ %s ] was not found on the host: %s", ifaceStr, err)
 		return false
 	}
 	return true
