@@ -416,10 +416,10 @@ func (driver *driver) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 		log.Errorf("Error looking up link [ %s ] object: [ %v ] error: [ %s ]", link.Attrs().Name, link, err)
 		return
 	}
-	log.Infof("Deleting the unused macvlan link [ %s ] from the removed container", link)
+	log.Infof("Deleting the unused ipvlan link [ %s ] from the removed container", link.Attrs().Name)
 	// Delete the link
 	if err := netlink.LinkDel(link); err != nil {
-		log.Errorf("unable to delete the Macvlan link [ %s ] on leave: %s", link, err)
+		log.Errorf("Unable to delete the ipvlan link named [ %s ] for the exiting container: %s", link.Attrs().Name, err)
 	}
 }
 
@@ -499,12 +499,12 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := netlink.LinkAdd(ipvlan); err != nil {
 		log.Warnf("Failed to create the netlink link: [ %v ] with the "+
-			"error: %s Note: a parent index cannot be link to both macvlan "+
+			"error: %s Note: a parent index cannot be link to both ipvlan "+
 			"and ipvlan simultaneously. A new parent index is required", ipvlan, err)
 		log.Warnf("Also check `/var/run/docker/netns/` for orphaned links to unmount and delete, then restart the plugin")
 		log.Warnf("Run this to clean orphaned links 'umount /var/run/docker/netns/* && rm /var/run/docker/netns/*'")
 	}
-	log.Infof("Created IPVlan port of: [ %s ] and mode: [ %s ]", ipvlan.Name, ipVlanMode)
+	log.Infof("Created ipvlan link: [ %s ] with a mode: [ %s ]", ipvlan.Name, ipVlanMode)
 	// Set the netlink iface MTU, default is 1500
 	if err := netlink.LinkSetMTU(ipvlan, defaultMTU); err != nil {
 		log.Errorf("Error setting the MTU [ %d ] for link [ %s ]: %s", defaultMTU, ipvlan.Name, err)
@@ -517,7 +517,6 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 	ifname := &InterfaceName{
 		SrcName:   ipvlan.Name,
 		DstPrefix: containerEthPrefix,
-		//		 ID:        0,
 	}
 	res := &joinResponse{}
 	// L2 ipvlan needs an explicit IP for a default GW in the container netns
