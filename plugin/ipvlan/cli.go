@@ -9,6 +9,7 @@ var (
 	FlagSubnet         = cli.StringFlag{Name: "ipvlan-subnet", Value: defaultSubnet, Usage: "subnet for the containers (l2 mode: 192.168.1.0/24)"}
 	FlagMtu            = cli.IntFlag{Name: "mtu", Value: cliMTU, Usage: "MTU of the container interface (default: 1500)"}
 	FlagIpvlanEthIface = cli.StringFlag{Name: "host-interface", Value: ipVlanEthIface, Usage: "(required) interface that the container will be communicating outside of the docker host with"}
+	FlagRoutingManager = cli.StringFlag{Name: "routemng", Value: routingManager, Usage: "name of the routing manager name [gobgp]. (default: gobgp)"}
 )
 
 var (
@@ -18,4 +19,5 @@ var (
 	defaultSubnet  = "192.168.1.0/24" // Should this just be the eth0 IP subnet?
 	gatewayIP      = ""               // GW required for L2. increment network addr+1 if not defined
 	cliMTU         = 1500
+	routingManager = "gobgp"
 )

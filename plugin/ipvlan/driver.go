@@ -121,9 +121,13 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 		// default route target since only unicast is allowed <3
 		ipVlanMode = ipVlanL3Routing
 		containerGW = nil
+		managermode := ""
+		if ctx.String("routemng") != "" {
+			managermode = ctx.String("routemng")
+		}
 
 		// Initialize Routing monitoring
-		go routing.InitRoutingMonitering(ipVlanEthIface)
+		go routing.InitRoutingMonitering(ipVlanEthIface, managermode)
 
 	default:
 		log.Fatalf("Invalid IPVlan mode supplied [ %s ]. IPVlan has two modes: [ %s ] or [%s ]", ctx.String("mode"), ipVlanL2, ipVlanL3)
