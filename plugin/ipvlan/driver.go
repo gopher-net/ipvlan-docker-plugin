@@ -13,6 +13,7 @@ import (
 	"github.com/docker/libnetwork/ipallocator"
 	"github.com/docker/libnetwork/iptables"
 	"github.com/docker/libnetwork/types"
+	"github.com/gopher-net/ipvlan-docker-plugin/plugin/routing"
 	"github.com/gorilla/mux"
 	"github.com/samalba/dockerclient"
 	"github.com/vishvananda/netlink"
@@ -24,6 +25,7 @@ const (
 	containerEthPrefix = "eth"
 	ipVlanL2           = "l2"
 	ipVlanL3           = "l3"
+	ipVlanL3Routing    = "l3routing"
 	minMTU             = 68
 	defaultMTU         = 1500
 	TxQueueLen         = 0
@@ -113,6 +115,20 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 		// default route target since only unicast is allowed <3
 		ipVlanMode = ipVlanL3
 		containerGW = nil
+
+	case ipVlanL3Routing:
+		// IPVlan simply needs the container interface for its
+		// default route target since only unicast is allowed <3
+		ipVlanMode = ipVlanL3Routing
+		containerGW = nil
+		managermode := ""
+		if ctx.String("routemng") != "" {
+			managermode = ctx.String("routemng")
+		}
+
+		// Initialize Routing monitoring
+		go routing.InitRoutingMonitering(ipVlanEthIface, managermode)
+
 	default:
 		log.Fatalf("Invalid IPVlan mode supplied [ %s ]. IPVlan has two modes: [ %s ] or [%s ]", ctx.String("mode"), ipVlanL2, ipVlanL3)
 	}
@@ -271,6 +287,21 @@ func (driver *driver) createNetwork(w http.ResponseWriter, r *http.Request) {
 		addRouteIface(containerCidr, ipvlanParent)
 		if err != nil {
 			log.Debugf("a problem occurred adding the container subnet default namespace route", err)
+		}
+	} else if ipVlanMode == ipVlanL3Routing {
+		log.Debugf("Adding route for the local ipvlan subnet [ %s ] in the default namespace using the specified host interface [ %s]", containerCidr.String(), ipVlanEthIface)
+		ipvlanParent, err := netlink.LinkByName(ipVlanEthIface)
+		// Add a route in the default NS to point to the IPVlan namespace subnet
+		addRouteIface(containerCidr, ipvlanParent)
+		if err != nil {
+			log.Debugf("a problem occurred adding the container subnet default namespace route", err)
+		}
+
+		// Announce the local IPVLAN network to the other peers in the BGP cluster
+		log.Infof("New Docker network: [ %s ]", containerCidr.String())
+		err = routing.AdvertizeNewRoute(containerCidr)
+		if err != nil {
+			log.Fatalf("Error installing container route : %s", err)
 		}
 	}
 }
@@ -529,7 +560,7 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ipvlan L3 mode doesnt need an IP for a default GW, just an iface dex.
-	if ipVlanMode == ipVlanL3 {
+	if ipVlanMode == ipVlanL3 || ipVlanMode == ipVlanL3Routing {
 		res = &joinResponse{
 			InterfaceName: *ifname,
 		}
