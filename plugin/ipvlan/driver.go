@@ -1,4 +1,4 @@
-vpackage ipvlan
+package ipvlan
 
 import (
 	"encoding/json"
