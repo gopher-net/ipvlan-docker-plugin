@@ -14,7 +14,7 @@ type RoutingInterface interface {
 	WithdrawRoute(localPrefix *net.IPNet) error
 }
 
-func InitRoutingMonitering(masterIface string, managermode string) {
+func InitRoutingMonitoring(masterIface string, managermode string) {
 	switch managermode {
 	case "gobgp":
 		log.Infof("Routing manager is %s", managermode)

@@ -1,4 +1,4 @@
-package ipvlan
+vpackage ipvlan
 
 import (
 	"encoding/json"
@@ -127,7 +127,7 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 		}
 
 		// Initialize Routing monitoring
-		go routing.InitRoutingMonitering(ipVlanEthIface, managermode)
+		go routing.InitRoutingMonitoring(ipVlanEthIface, managermode)
 
 	default:
 		log.Fatalf("Invalid IPVlan mode supplied [ %s ]. IPVlan has two modes: [ %s ] or [%s ]", ctx.String("mode"), ipVlanL2, ipVlanL3)
