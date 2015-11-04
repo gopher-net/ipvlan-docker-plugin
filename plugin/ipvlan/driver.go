@@ -122,12 +122,20 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 		ipVlanMode = ipVlanL3Routing
 		containerGW = nil
 		managermode := ""
+		serveraddr := net.ParseIP("127.0.0.1")
+		as := "65000"
 		if ctx.String("routemng") != "" {
 			managermode = ctx.String("routemng")
 		}
+		if ctx.String("serveraddr") != "" {
+			serveraddr = net.ParseIP(ctx.String("serveraddr"))
+		}
+		if ctx.String("as") != "" {
+			as = ctx.String("as")
+		}
 
 		// Initialize Routing monitoring
-		go routing.InitRoutingMonitering(ipVlanEthIface, managermode)
+		go routing.InitRoutingMonitering(ipVlanEthIface, managermode, serveraddr, as)
 
 	default:
 		log.Fatalf("Invalid IPVlan mode supplied [ %s ]. IPVlan has two modes: [ %s ] or [%s ]", ctx.String("mode"), ipVlanL2, ipVlanL3)

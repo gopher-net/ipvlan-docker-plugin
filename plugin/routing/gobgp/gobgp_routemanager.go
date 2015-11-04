@@ -5,29 +5,84 @@ import (
 	"net"
 
 	log "github.com/Sirupsen/logrus"
+	"github.com/docker/libkv"
+	"github.com/docker/libkv/store"
+	"github.com/docker/libkv/store/consul"
 	api "github.com/osrg/gobgp/api"
 	"github.com/osrg/gobgp/packet"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"io"
+	"strconv"
+	"strings"
 	"time"
 )
 
 type BgpRouteManager struct {
 	// Master interface for IPVlan and BGP peering source
 	ethIface      string
-	grpcserver    net.IP
+	server        net.IP
 	bgpgrpcclient api.GobgpApiClient
 	learnedRoutes []RibLocal
+	kv            store.Store
+	neighborkey   string
+	asnum         string
+	neighborlist  map[string]string
 }
 
-func NewBgpRouteManager(masterIface string, server net.IP) *BgpRouteManager {
-	ret := &BgpRouteManager{
-		ethIface:   masterIface,
-		grpcserver: server,
+func NewBgpRouteManager(masterIface string, server net.IP, as string) *BgpRouteManager {
+	b := &BgpRouteManager{
+		ethIface:     masterIface,
+		server:       server,
+		neighborlist: map[string]string{},
+		asnum:        as,
 	}
-	return ret
+	consul.Register()
+	client := "localhost:8500"
+	kv, err := libkv.NewStore(
+		store.CONSUL, // or "consul"
+		[]string{client},
+		&store.Config{
+			ConnectionTimeout: 10 * time.Second,
+		},
+	)
+	b.kv = kv
+	if err != nil {
+		log.Fatal("Cannot create store consul")
+	}
+	b.neighborkey = "bgpneighbor"
+	if exist, _ := kv.Exists(b.neighborkey); exist == false {
+		err := b.kv.Put(b.neighborkey, []byte("bgpneighbor"), &store.WriteOptions{IsDir: true})
+		if err != nil {
+			fmt.Errorf("Something went wrong when initializing key %v", b.neighborkey)
+		}
+	}
+	err = b.kv.Put(b.neighborkey+"/"+server.String(), []byte(as), nil)
+	if err != nil {
+		log.Errorf("Error trying to put value at key: %v", b.neighborkey)
+	}
+
+	return b
 }
+func (b *BgpRouteManager) SetBgpConfig() error {
+	a, err := strconv.Atoi(b.asnum)
+	if err != nil {
+		return err
+	}
+	_, err = b.bgpgrpcclient.ModGlobalConfig(context.Background(), &api.ModGlobalConfigArguments{
+		Operation: api.Operation_ADD,
+		Global: &api.Global{
+			As:       uint32(a),
+			RouterId: b.server.String(),
+		},
+	})
+	if err != nil {
+		return err
+	}
+	log.Debugf("Set BGP Global config: as %d, router id %v", b.asnum, b.server)
+	return nil
+}
+
 func (b *BgpRouteManager) StartMonitoring() error {
 	err := cleanExistingRoutes(b.ethIface)
 	if err != nil {
@@ -45,6 +100,12 @@ func (b *BgpRouteManager) StartMonitoring() error {
 	b.bgpgrpcclient = api.NewGobgpApiClient(conn)
 	RibCh := make(chan *api.Path)
 	go b.monitorBestPath(RibCh)
+	stopCh := make(<-chan struct{})
+	events, err := b.kv.WatchTree(b.neighborkey, stopCh)
+	if err != nil {
+		log.Errorf("Error trying to WatchTree: %v", err)
+	}
+	b.SetBgpConfig()
 
 	log.Info("Initialization complete, now monitoring BGP for new routes..")
 	for {
@@ -81,6 +142,31 @@ func (b *BgpRouteManager) StartMonitoring() error {
 				}
 			}
 			log.Debugf("Verbose update details: %s", monitorUpdate)
+		case neighbors := <-events:
+			for _, neighbor := range neighbors {
+				neighboraddr := strings.Split(neighbor.Key, "/")[1]
+				_, ok := b.neighborlist[neighboraddr]
+				if neighboraddr != b.server.String() && !ok {
+					b.neighborlist[neighboraddr] = string(neighbor.Value)
+					neighborAS, _ := strconv.ParseUint(string(neighbor.Value), 10, 32)
+					log.Debugf("BGP neighbor add %s", neighboraddr)
+					peer := &api.Peer{
+						NighborAddress: neighboraddr,
+						Conf: &api.PeerConf{
+							NeighborAddress: neighboraddr,
+							PeerAs:          uint32(neighborAS),
+						},
+					}
+					arg := &api.ModNeighborArguments{
+						Operation: api.Operation_ADD,
+						Peer:      peer,
+					}
+					_, err := b.bgpgrpcclient.ModNeighbor(context.Background(), arg)
+					if err != nil {
+						return err
+					}
+				}
+			}
 		}
 	}
 }

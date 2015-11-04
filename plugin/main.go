@@ -39,6 +39,8 @@ func main() {
 		ipvlan.FlagSubnet,
 		ipvlan.FlagMtu,
 		ipvlan.FlagRoutingManager,
+		ipvlan.FlagServerAddr,
+		ipvlan.FlagBgpAs,
 	}
 	app.Before = initEnv
 	app.Action = Run
