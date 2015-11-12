@@ -14,14 +14,14 @@ type RoutingInterface interface {
 	WithdrawRoute(localPrefix *net.IPNet) error
 }
 
-func InitRoutingMonitering(masterIface string, managermode string) {
+func InitRoutingMonitering(masterIface string, managermode string, serveraddr net.IP, as string) {
 	switch managermode {
 	case "gobgp":
 		log.Infof("Routing manager is %s", managermode)
-		routemanager = gobgp.NewBgpRouteManager(masterIface, net.ParseIP("127.0.0.1"))
+		routemanager = gobgp.NewBgpRouteManager(masterIface, serveraddr, as)
 	default:
 		log.Infof("Default Routing manager: Gobgp")
-		routemanager = gobgp.NewBgpRouteManager(masterIface, net.ParseIP("127.0.0.1"))
+		routemanager = gobgp.NewBgpRouteManager(masterIface, serveraddr, as)
 	}
 	error := routemanager.StartMonitoring()
 	if error != nil {
