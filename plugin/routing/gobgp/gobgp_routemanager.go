@@ -151,7 +151,8 @@ func (b *BgpRouteManager) StartMonitoring() error {
 					neighborAS, _ := strconv.ParseUint(string(neighbor.Value), 10, 32)
 					log.Debugf("BGP neighbor add %s", neighboraddr)
 					peer := &api.Peer{
-						NighborAddress: neighboraddr,
+						// TODO: Debug Unresolved in Gobgp API master
+						// NighborAddress: neighboraddr,
 						Conf: &api.PeerConf{
 							NeighborAddress: neighboraddr,
 							PeerAs:          uint32(neighborAS),
