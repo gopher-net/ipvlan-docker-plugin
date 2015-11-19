@@ -3,14 +3,12 @@ package ipvlan
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
-	"strings"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
-	"github.com/docker/libnetwork/ipallocator"
+	"github.com/docker/libnetwork/driverapi"
 	"github.com/docker/libnetwork/iptables"
 	"github.com/docker/libnetwork/types"
 	"github.com/gopher-net/ipvlan-docker-plugin/plugin/routing"
@@ -45,11 +43,12 @@ type Driver interface {
 
 type driver struct {
 	dockerer
-	ipAllocator *ipallocator.IPAllocator
-	version     string
-	network     string
-	cidr        *net.IPNet
-	nameserver  string
+	//	ipam *ipams
+	//	version     string
+	networkID  string
+	gateway    string
+	cidr       *net.IPNet
+	nameserver string
 	pluginConfig
 }
 
@@ -86,41 +85,18 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 		log.Fatalf("The MTU value passed [ %d ] must be greater then [ %d ] bytes per rfc791", ctx.Int("mtu"), minMTU)
 	}
 
-	// Parse the container IP subnet
-	containerGW, cidr, err := net.ParseCIDR(ctx.String("ipvlan-subnet"))
-	if err != nil {
-		log.Fatalf("Error parsing cidr from the subnet flag provided [ %s ]: %s", FlagSubnet, err)
-	}
-
-	// For ipvlan L2 mode a gateway IP address is used just like any other
-	// normal L2 domain. If no gateway is specified, we attempt to guess using
-	// the first usable IP on the container subnet from the CLI argument or from
-	// the defaultSubnet "192.168.1.0/24" which results in a gatway of "192.168.1.1".
 	switch ctx.String("mode") {
 	case ipVlanL2:
 		ipVlanMode = ipVlanL2
-		if ctx.String("gateway") != "" {
-			// bind the container gateway to the IP passed from the CLI
-			cliGateway := net.ParseIP(ctx.String("gateway"))
-			if err != nil {
-				log.Fatalf("The IP passed with the [ gateway ] flag [ %s ] was not a valid address: %s", FlagGateway.Value, err)
-			}
-			containerGW = cliGateway
-		} else {
-			// if no gateway was passed, guess the first valid address on the container subnet
-			containerGW = ipIncrement(containerGW)
-		}
 	case ipVlanL3:
 		// IPVlan simply needs the container interface for its
 		// default route target since only unicast is allowed <3
 		ipVlanMode = ipVlanL3
-		containerGW = nil
-
 	case ipVlanL3Routing:
 		// IPVlan simply needs the container interface for its
 		// default route target since only unicast is allowed <3
 		ipVlanMode = ipVlanL3Routing
-		containerGW = nil
+		//containerGW = nil
 		managermode := ""
 		serveraddr := net.ParseIP("127.0.0.1")
 		as := "65000"
@@ -133,7 +109,6 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 		if ctx.String("as") != "" {
 			as = ctx.String("as")
 		}
-
 		// Initialize Routing monitoring
 		go routing.InitRoutingMonitering(ipVlanEthIface, managermode, serveraddr, as)
 
@@ -142,22 +117,15 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 	}
 
 	pluginOpts := &pluginConfig{
-		mtu:             cliMTU,
-		mode:            ipVlanMode,
-		containerSubnet: cidr,
-		gatewayIP:       containerGW,
-		hostIface:       ipVlanEthIface,
+		mtu:       cliMTU,
+		mode:      ipVlanMode,
+		hostIface: ipVlanEthIface,
 	}
-	// Leaving as info for now to stdout the plugin config
-	log.Infof("Plugin configuration options are: \n %s", pluginOpts)
 
-	ipAllocator := ipallocator.New()
 	d := &driver{
 		dockerer: dockerer{
 			client: docker,
 		},
-		ipAllocator:  ipAllocator,
-		version:      version,
 		pluginConfig: *pluginOpts,
 	}
 	return d, nil
@@ -167,7 +135,6 @@ func (driver *driver) Listen(socket string) error {
 	router := mux.NewRouter()
 	router.NotFoundHandler = http.HandlerFunc(notFound)
 
-	router.Methods("GET").Path("/status").HandlerFunc(driver.status)
 	router.Methods("POST").Path("/Plugin.Activate").HandlerFunc(driver.handshake)
 	router.Methods("POST").Path("/NetworkDriver.GetCapabilities").HandlerFunc(driver.capabilities)
 
@@ -253,13 +220,11 @@ func (driver *driver) capabilities(w http.ResponseWriter, r *http.Request) {
 	log.Debug("Capabilities exchange complete")
 }
 
-func (driver *driver) status(w http.ResponseWriter, r *http.Request) {
-	io.WriteString(w, fmt.Sprintln("ipvlan plugin", driver.version))
-}
-
 type networkCreate struct {
 	NetworkID string
 	Options   map[string]interface{}
+	IpV4Data  []driverapi.IPAMData
+	ipV6Data  []driverapi.IPAMData
 }
 
 func (driver *driver) createNetwork(w http.ResponseWriter, r *http.Request) {
@@ -269,24 +234,18 @@ func (driver *driver) createNetwork(w http.ResponseWriter, r *http.Request) {
 		sendError(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	if driver.network != "" {
-		errorResponsef(w, "You get just one network, and you already made %s", driver.network)
-		return
+	log.Debugf("Network Create Called: [ %+v ]", create)
+	for _, v4 := range create.IpV4Data {
+		driver.gateway = v4.Gateway.IP.String()
+		driver.cidr = v4.Pool
 	}
-	driver.network = create.NetworkID
-	containerCidr := driver.pluginConfig.containerSubnet
-	driver.cidr = containerCidr
-	// Todo: check for ipam errors
-	driver.ipAllocator.RequestIP(containerCidr, nil)
-
+	// TODO: replace driver options with docker network options
+	for k, v := range create.Options {
+		log.Debugf("Libnetwork Opts Sent: [ %s ] Value: [ %s ]", k, v)
+	}
+	driver.networkID = create.NetworkID
+	containerCidr := driver.cidr
 	emptyResponse(w)
-
-	// TODO: sort out what rules are in place by default vs. plugin
-	err = driver.natOut()
-	if err != nil {
-		log.Warnf("error setting up outboud nat: %s", err)
-	}
 
 	if ipVlanMode == ipVlanL3 {
 		log.Debugf("Adding route for the local ipvlan subnet [ %s ] in the default namespace using the specified host interface [ %s]", containerCidr.String(), ipVlanEthIface)
@@ -334,12 +293,12 @@ func (driver *driver) deleteNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Debugf("Delete network request: %+v", &delete)
-	if delete.NetworkID != driver.network {
+	if delete.NetworkID != driver.networkID {
 		log.Debugf("network not found: %+v", &delete)
 		errorResponsef(w, "Network %s not found", delete.NetworkID)
 		return
 	}
-	driver.network = ""
+	driver.networkID = ""
 	emptyResponse(w)
 	log.Infof("Destroy network %s", delete.NetworkID)
 }
@@ -386,30 +345,26 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	netID := create.NetworkID
 	endID := create.EndpointID
 
-	if netID != driver.network {
+	if netID != driver.networkID {
 		log.Warnf("Network not found, [ %s ]", netID)
 		errorResponsef(w, "No such network %s", netID)
 		return
 	}
-	log.Debugf("The container subnet for this context is [ %s ]", driver.pluginConfig.containerSubnet.String())
+	log.Debugf("The container subnet for this context is [ %s ]", create.Interface.Address)
 	// Request an IP address from libnetwork based on the cidr scope
 	// TODO: Add a user defined static ip addr option
-	allocatedIP, err := driver.ipAllocator.RequestIP(driver.pluginConfig.containerSubnet, nil)
-	if err != nil || allocatedIP == nil {
-		log.Errorf("Unable to obtain an IP address from libnetwork ipam: %s", err)
-		errorResponsef(w, "%s", err)
+	containerAddress := create.Interface.Address
+	if containerAddress == "" {
+		log.Errorf("Unable to obtain an IP address from libnetwork default ipam")
 		return
 	}
+
 	// generate a mac address for the pending container
-	mac := makeMac(allocatedIP)
-	// Have to convert container IP to a string ip/mask format
-	bridgeMask := strings.Split(driver.pluginConfig.containerSubnet.String(), "/")
-	containerAddress := allocatedIP.String() + "/" + bridgeMask[1]
+	mac := makeMac(net.ParseIP(containerAddress))
 
 	log.Infof("Allocated container IP: [ %s ]", containerAddress)
-
+	// IP addrs comes from libnetwork ipam via user 'docker network' parameters
 	respIface := &EndpointInterface{
-		Address:    containerAddress,
 		MacAddress: mac,
 	}
 	resp := &endpointResponse{
@@ -437,10 +392,7 @@ func (driver *driver) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 	if driver.cidr == nil {
 		return
 	}
-	// ReleaseIP releases an ip back to a network
-	if err := driver.ipAllocator.ReleaseIP(driver.cidr, driver.cidr.IP); err != nil {
-		log.Warnf("Error releasing IP: %s", err)
-	}
+
 	log.Debugf("Delete endpoint %s", delete.EndpointID)
 
 	containerLink := delete.EndpointID[:5]
@@ -562,7 +514,7 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 	if ipVlanMode == ipVlanL2 {
 		res = &joinResponse{
 			InterfaceName: *ifname,
-			Gateway:       driver.pluginConfig.gatewayIP.String(),
+			Gateway:       driver.gateway,
 		}
 		defer objectResponse(w, res)
 	}

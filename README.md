@@ -1,7 +1,14 @@
 ipvlan-docker-plugin
 =================
 
-ipvlan is a lightweight L2 and L3 network implementation that does not require traditional bridges. The purpose of this is to have references for plugging into the docker networking APIs which are now available as part of libnetwork. Libnetwork is still under development and is considered as experimental at this point.
+This repo is for examples of a plugin w/ libnetwork and temporary until we get Ipvlan/Macvlan native driver support in Docker which will be
+relatively soon. This will deprecate in order to focus on much more interesting Gopher networking scenarios like integrations with nerdy network
+knobs such as [osrg/gobgp](https://github.com/osrg/gobgp/) or different underlay integrations. 802.1q should be supported by virtue of subinterfaces
+with macvlan/ipvlan with native drivers. While it can be supported here, the effort would be kind of wasted since we will get it native soon so
+hang tight for trunks.
+
+
+ipvlan is a lightweight L2 and L3 network implementation that does not require traditional bridges and is generally pretty kewl.
 
 ### Pre-Requisites
 
@@ -24,108 +31,69 @@ $ dpkg -i linux-headers-4.3*.deb linux-image-4.3*.deb
 $ reboot
 ```
 
-#### Ubuntu 14.10 or less
+As of Docker v1.9 the docker/libnetwork APIs are packaged by default in Docker. Grab the latest or v1.9+ version of Docker from [Latest Linux
+binary from Docker](http://docs.docker.com/engine/installation/binaries/). Alternatively `curl -sSL https://get.docker.com/ | sh` or from your
+distribution repo or docker repos.
 
-On Ubuntu 14.10 or less the the experimental installer as of the time of writing this will install 1.8.0-dev which does not capture the latest libnetwork API changes so we need to pull down the latest [Docker experimental](https://github.com/docker/docker/tree/master/experimental) binary.
+### Ipvlan L2 Mode Instructions
 
-If you have never installed Docker on the host there may be some dependencies you need so run the installer first. Once done, remove the docker-engine package and pull down the latest binary from [Docker Master Binaries](https://master.dockerproject.org) which is currently currently `v1.9.0-dev`.
-
-```
-$ wget -qO- https://experimental.docker.com/ | sh
-$ dpkg -r docker-engine
-$ wget https://experimental.docker.com/builds/Linux/x86_64/docker-latest
-$ chmod +x docker-latest
-$ sudo mv docker-latest  /usr/bin/docker
-$ docker version
-```
-
-#### Ubuntu 15.04 or greater
-
-If using 15.04 or the latest Debian you should be able to simply use the installer and get Docker `1.9.0-dev`
+**1.** Start Docker with the following or simply start the service. Version 1.9+ is required.
 
 ```
-$ wget -qO- https://experimental.docker.com/ | sh
-$ docker version
-    Client:
-     Version:      1.9.0-dev
-     API version:  1.21
-     Go version:   go1.4.3
-     Git commit:   1e514de
-     Built:        Thu Sep 24 16:59:15 UTC 2015
-     OS/Arch:      linux/amd64
-     Experimental: true
+$ docker -v
+Docker version 1.9.0, build 76d6bc9
+
+# -D is optional debugging
+$ docker-latest  daemon -D
 ```
 
-### QuickStart Instructions (L2 Mode)
 
+**2.**  Start the driver in L2 mode.
 
-**1.** Start Docker with the following. **TODO:** How to specify the plugin socket without having to pass a bridge name `foo` since ipvlan/macvlan do not use traditional bridges. This example is running docker in the foreground so you can see the logs realtime.
+- *Note:* The host-interface flag is the Docker host's eth interface. It shouldnt be required for the driver but this is a bit lazy and isnt
+honoring docker network opts yet.
 
+In the repo directory, use the binary named `ipvlan-docker-plugin-0.2-Linux-x86_64`. Feel free to rename it :)
 ```
-$ docker -d --default-network=ipvlan:foo`
-```
+# -d is debug
+#  --host-interface is the master interface, eth0, eth1 etc. The docker network create needs to correspond to that subnet for L2 mode
 
-**2.** Download the plugin binary. A pre-compiled x86_64 binary can be downloaded from the [binaries](https://github.com/gopher-net/ipvlan-docker-plugin/binaries) directory.
-
-```
-$ wget -O ./ipvlan-docker-plugin https://github.com/gopher-net/ipvlan-docker-plugin/binaries/ipvlan-docker-plugin-0.1-Linux-x86_64
-$ chmod +x ipvlan-docker-plugin
-```
-
-**3.** In a new window, start the plugin with the following. Replace the values with the appropriate subnet and gateway to match the network the docker host is attached to. In the following the nic `eth1` is attached to a network segment with other hosts on the `192.168.1.0/24` subnet along with the gateway `192.168.1.1`.
-
-Here is the `eth1` ip configuration to make help ensure the role of the parent ipvlan interface is clear:
-
-```
-$ ip add show eth1
-    3: eth1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000
-        link/ether 00:50:56:27:87:2f brd ff:ff:ff:ff:ff:ff
-        inet 192.168.1.254/24 brd 192.168.1.255 scope global eth1
+$ cd binaries
+$ ./ipvlan-docker-plugin-0.2-Linux-x86_64 -d --host-interface=eth1 --mode=l2
 ```
 
-**4.** Start the driver in L2 mode.
+**3.** Create a network with Docker
 
-- *Note:* The host-interface flag is the Docker host's ethernet interface that will be used as a master interface for the ipvlan link. For getting familiar with ipvlan it would be the easiest to simply use whatever eth interface that has your default gateway. Unlike Linux bridge operations, there is no awkward moving of IP addresses to another interface required.
+Note, the subnet needs to correspond to the master interface. a TODO is to honor the Docker opts that will enable multiple master interfaces for
+subinterfaces and other ethX interfaces at once. Opts from Docker network are parsed, just not honored. Adding that to a native driver into
+libnetwork will be easier and more likely then anyone doing it here.
 
 ```
-$ ./ipvlan-docker-plugin \
-    --gateway=192.168.1.1 \
-    --ipvlan-subnet=192.168.1.0/24 \
-    --host-interface=eth1 \
-    --mode=l2
-
-# Or in one line:
-
-$ ./ipvlan-docker-plugin --host-interface=eth1 -d --mode=l2 --gateway=192.168.1.1  --ipvlan-subnet=192.168.1.0/24
+ network  create  -d ipvlan  --subnet=192.168.1.0/24 --gateway=192.168.1.1 -o host_iface=eth1 net1
 ```
 
-- For debugging, or just extra logs from the sausage factory, add the debug flag `./ipvlan-docker-plugin -d`.
+**3.** Create a network with Docker
 
-**5.** Run some containers and verify they can ping one another with `docker run -it --rm busybox` or `docker run -it --rm ubuntu` etc, any other docker images you prefer. Alternatively,`docker run -itd busybox`
+ Run some containers, specify the network and verify they can ping one another
 
-    * Or use the script `release-the-whales.sh` in the `scripts/` directory to launch a bunch of lightweight busybox instances to see how well the plugin scales for you. It can also serve as temporary integration testing. See the comments in the script for usage. There are some default values in the driver used if no values are specified with the binary or flagged as mandatory. The driver's CLI will tell you what is required and any default values/constructors being used.
+```
+docker run --net=net1 -it --rm ubuntu
+```
 
 ### Example L3 Mode
 
-The steps for L3 mode are the same, but L3 mode will require some route distribution in order to be useful. **Note:** L3 mode needs to use a **different** subnet then the parent interface. It also requires a static route in the global namespace that is added by the driver but it also requires other hosts to know about the subnet you have tucked away in the container namespace. Out of the box L3 mode will not be able to ping between different hosts without the routes being distributed across all of the hosts. You can manually add it into the global namespace with something like `ip route add 10.1.1.0/24 <x.x.x.x Next-hop IP could be another endpoint or gateway>`.
+TODO: Test me.
 
-If a nerd for networking, take a look at a /32 multi-host driver that is this plugin (IPVlan) plus a BGP daemon to distribute the container host routes (or /24 for example for an entire docker host instead of /32s). The routes get distributed to all other hosts in the cluster using the same distributed system protocol that scales the Internet. The BGP plugin proof of concept is at [nerdalert/bgp-ipvlan-docker](https://github.com/nerdalert/bgp-ipvlan-docker).
+### Notes and General IPVlan Caveats
 
-```
-$ ./ipvlan-docker-plugin \
-        --host-interface eth1 \
-        --ipvlan-subnet=10.1.1.0/24 \
-        --mode=l3
 
-# Or with Go using (see dev and issues for godep instructions for dependencies):
-go run main.go --host-interface eth1 -d --mode l3 --ipvlan-subnet=10.1.1.0/24
-```
+- There can only be one network type bound to the host interface at any given time. Example: Macvlan Bridge or IPVlan L2. There is no mixing.
+- The specified gateway is external to the host or at least not defined by the driver itself.
+- Multiple drivers can be active at any time. However, Macvlan and Ipvlan are not compatable on the same master interface (e.g. eth0).
+- You can create multiple networks and have active containers in each network as long as they are all of the same mode type.
+- Each network is isolated from one another. Any container inside the network/subnet can talk to one another without a reachable gateway.
+- Containers on separate networks cannot reach one another without an external process routing between the two networks/subnets.
 
-Lastly start up some containers and check reachability:
-
-```
-$ docker run -i -t --rm ubuntu
-```
 
 ### Dev and issues
 
