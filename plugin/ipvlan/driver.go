@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
@@ -43,13 +44,13 @@ type Driver interface {
 
 type driver struct {
 	dockerer
-	//	ipam *ipams
-	//	version     string
 	networkID  string
 	gateway    string
 	cidr       *net.IPNet
 	nameserver string
 	pluginConfig
+	networks networkTable
+	sync.Mutex
 }
 
 // Struct for binding plugin specific configurations (cli.go for details).
@@ -61,21 +62,30 @@ type pluginConfig struct {
 	gatewayIP       net.IP
 }
 
+type pluginNet struct {
+	netid     string
+	hostiface string
+}
+
+type endpoint struct {
+	id      string
+	mac     net.HardwareAddr
+	addr    *net.IPNet
+	srcName string
+}
+
+type endpointTable map[string]*endpoint
+
 func New(version string, ctx *cli.Context) (Driver, error) {
 	docker, err := dockerclient.NewDockerClient("unix:///var/run/docker.sock", nil)
 	if err != nil {
 		return nil, fmt.Errorf("could not connect to docker: %s", err)
 	}
-	if ctx.String("host-interface") == "" {
-		log.Fatalf("Required flag [ host-interface ] that is used for off box communication was not defined. Example: --host-interface=eth1")
-	}
 	ipVlanEthIface = ctx.String("host-interface")
-
 	// bind CLI opts to the user config struct
 	if ok := validateHostIface(ctx.String("host-interface")); !ok {
-		log.Fatalf("Requird field [ host-interface ] ethernet interface [ %s ] was not found. Exiting since this is required for both l2 and l3 modes.", ctx.String("host-interface"))
+		log.Debugf("Field [ host-interface ] not detected. Assuming it will be passed via docker network -o (opts)")
 	}
-
 	// lower bound of v4 MTU is 68-bytes per rfc791
 	if ctx.Int("mtu") <= 0 {
 		cliMTU = defaultMTU
@@ -113,7 +123,7 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 		go routing.InitRoutingMonitering(ipVlanEthIface, managermode, serveraddr, as)
 
 	default:
-		log.Fatalf("Invalid IPVlan mode supplied [ %s ]. IPVlan has two modes: [ %s ] or [%s ]", ctx.String("mode"), ipVlanL2, ipVlanL3)
+		log.Debugf("Field [ mode ] not detected. Assuming it will be passed via docker network -o (opts)")
 	}
 
 	pluginOpts := &pluginConfig{
@@ -123,6 +133,7 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 	}
 
 	d := &driver{
+		networks: networkTable{},
 		dockerer: dockerer{
 			client: docker,
 		},
@@ -239,12 +250,53 @@ func (driver *driver) createNetwork(w http.ResponseWriter, r *http.Request) {
 		driver.gateway = v4.Gateway.IP.String()
 		driver.cidr = v4.Pool
 	}
-	// TODO: replace driver options with docker network options
-	for k, v := range create.Options {
-		log.Debugf("Libnetwork Opts Sent: [ %s ] Value: [ %s ]", k, v)
-	}
 	driver.networkID = create.NetworkID
 	containerCidr := driver.cidr
+
+	n := &network{
+		id:        driver.networkID,
+		driver:    driver,
+		endpoints: endpointTable{},
+	}
+	// Parse docker network -o opts
+	for k, v := range create.Options {
+		if k == "com.docker.network.generic" {
+			if genericOpts, ok := v.(map[string]interface{}); ok {
+				for key, val := range genericOpts {
+					log.Debugf("Libnetwork Opts Sent: [ %s ] Value: [ %s ]", key, val)
+					// Parse -o mode from libnetwork generic opts
+					if key == "mode" {
+						switch val {
+						case ipVlanL2:
+							log.Debugf("Ipvlan mode is L2 [ %s ]", val)
+							// backward compatable
+							ipVlanMode = ipVlanL2
+							// new API
+							n.modeOpt = ipVlanL2
+						case ipVlanL3:
+							log.Debugf("Ipvlan mode is L3 [ %s ]", val)
+							// IPVlan simply needs the container interface for its
+							// default route target since only unicast is allowed <3
+							// backward compatable
+							ipVlanMode = ipVlanL3
+							// new API
+							n.modeOpt = ipVlanL3
+						case ipVlanL3Routing:
+							// IPVlan simply needs the container interface for its
+							// default route target since only unicast is allowed <3
+							ipVlanMode = ipVlanL3Routing
+							n.modeOpt = ipVlanL3Routing
+						}
+					}
+					// Parse -o host_iface from libnetwork generic opts
+					if key == "host_iface" {
+						n.ifaceOpt = val.(string)
+					}
+				}
+			}
+		}
+	}
+	driver.addNetwork(n)
 	emptyResponse(w)
 
 	if ipVlanMode == ipVlanL3 {
@@ -288,6 +340,7 @@ type networkDelete struct {
 
 func (driver *driver) deleteNetwork(w http.ResponseWriter, r *http.Request) {
 	var delete networkDelete
+	nid := delete.NetworkID
 	if err := json.NewDecoder(r.Body).Decode(&delete); err != nil {
 		sendError(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
 		return
@@ -295,12 +348,21 @@ func (driver *driver) deleteNetwork(w http.ResponseWriter, r *http.Request) {
 	log.Debugf("Delete network request: %+v", &delete)
 	if delete.NetworkID != driver.networkID {
 		log.Debugf("network not found: %+v", &delete)
-		errorResponsef(w, "Network %s not found", delete.NetworkID)
+		errorResponsef(w, "Network %s not found", nid)
 		return
 	}
 	driver.networkID = ""
 	emptyResponse(w)
-	log.Infof("Destroy network %s", delete.NetworkID)
+	log.Infof("Deleting plugin cache for network %s", nid)
+
+	if driver.networkID == "" {
+		log.Errorf("invalid network id")
+	}
+	n := driver.network(driver.networkID)
+	if n == nil {
+		log.Errorf("could not find network with id %s in plugin cache", nid)
+	}
+	driver.delNetwork(nid)
 }
 
 // delRouteIface clean up the required L3 mode default ns route
@@ -467,70 +529,145 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Debugf("Join request: %+v", &j)
 
+	getID, err := driver.getNetwork(j.NetworkID)
+	if err != nil {
+		log.Errorf("error getting network ID mode [ %s ]: %v", j.NetworkID, err)
+	}
+
 	endID := j.EndpointID
 	// unique name while still on the common netns
 	preMoveName := endID[:5]
-	mode, err := getIPVlanMode(ipVlanMode)
-	if err != nil {
-		log.Errorf("error getting vlan mode [ %v ]: %s", mode, err)
-		return
-	}
-	// Get the link for the master index (Example: the docker host eth iface)
-	hostEth, err := netlink.LinkByName(ipVlanEthIface)
-	if err != nil {
-		log.Warnf("Error looking up the parent iface [ %s ] error: [ %s ]", ipVlanEthIface, err)
-	}
-	ipvlan := &netlink.IPVlan{
-		LinkAttrs: netlink.LinkAttrs{
-			Name:        preMoveName,
-			ParentIndex: hostEth.Attrs().Index,
-			TxQLen:      TxQueueLen,
-		},
-		Mode: mode,
-	}
-	if err := netlink.LinkAdd(ipvlan); err != nil {
-		log.Warnf("Failed to create the netlink link: [ %v ] with the "+
-			"error: %s Note: a parent index cannot be link to both ipvlan "+
-			"and ipvlan simultaneously. A new parent index is required", ipvlan, err)
-		log.Warnf("Also check `/var/run/docker/netns/` for orphaned links to unmount and delete, then restart the plugin")
-		log.Warnf("Run this to clean orphaned links 'umount /var/run/docker/netns/* && rm /var/run/docker/netns/*'")
-	}
-	log.Infof("Created ipvlan link: [ %s ] with a mode: [ %s ]", ipvlan.Name, ipVlanMode)
-	// Set the netlink iface MTU, default is 1500
-	if err := netlink.LinkSetMTU(ipvlan, defaultMTU); err != nil {
-		log.Errorf("Error setting the MTU [ %d ] for link [ %s ]: %s", defaultMTU, ipvlan.Name, err)
-	}
-	// Bring the netlink iface up
-	if err := netlink.LinkSetUp(ipvlan); err != nil {
-		log.Warnf("failed to enable the ipvlan netlink link: [ %v ]", ipvlan, err)
-	}
-	// SrcName gets renamed to DstPrefix on the container iface
-	ifname := &InterfaceName{
-		SrcName:   ipvlan.Name,
-		DstPrefix: containerEthPrefix,
-	}
 	res := &joinResponse{}
-	// L2 ipvlan needs an explicit IP for a default GW in the container netns
-	if ipVlanMode == ipVlanL2 {
-		res = &joinResponse{
-			InterfaceName: *ifname,
-			Gateway:       driver.gateway,
-		}
-		defer objectResponse(w, res)
-	}
 
-	// ipvlan L3 mode doesnt need an IP for a default GW, just an iface dex.
-	if ipVlanMode == ipVlanL3 || ipVlanMode == ipVlanL3Routing {
-		res = &joinResponse{
-			InterfaceName: *ifname,
+	/* Backward compatable for plugin options */
+	if getID.modeOpt == "" {
+		mode, err := getIPVlanMode(ipVlanMode)
+		if err != nil {
+			log.Errorf("error getting vlan mode [ %v ]: %s", mode, err)
+			return
 		}
-		// Add a default route of only the interface inside the container
-		defaultRoute := &staticRoute{
-			Destination: defaultRoute,
-			RouteType:   types.CONNECTED,
-			NextHop:     "",
+		// Get the link for the master index (Example: the docker host eth iface)
+		hostEth, err := netlink.LinkByName(ipVlanEthIface)
+		if err != nil {
+			log.Warnf("Error looking up the parent iface [ %s ] error: [ %s ]", ipVlanEthIface, err)
 		}
-		res.StaticRoutes = []*staticRoute{defaultRoute}
+		ipvlan := &netlink.IPVlan{
+			LinkAttrs: netlink.LinkAttrs{
+				Name:        preMoveName,
+				ParentIndex: hostEth.Attrs().Index,
+				TxQLen:      TxQueueLen,
+			},
+			Mode: mode,
+		}
+		if err := netlink.LinkAdd(ipvlan); err != nil {
+			log.Warnf("Failed to create the netlink link: [ %v ] with the "+
+				"error: %s Note: a parent index cannot be link to both ipvlan "+
+				"and ipvlan simultaneously. A new parent index is required", ipvlan, err)
+			log.Warnf("Also check `/var/run/docker/netns/` for orphaned links to unmount and delete, then restart the plugin")
+			log.Warnf("Run this to clean orphaned links 'umount /var/run/docker/netns/* && rm /var/run/docker/netns/*'")
+		}
+		log.Infof("Created ipvlan link: [ %s ] with a mode: [ %s ]", ipvlan.Name, ipVlanMode)
+		// Set the netlink iface MTU, default is 1500
+		if err := netlink.LinkSetMTU(ipvlan, defaultMTU); err != nil {
+			log.Errorf("Error setting the MTU [ %d ] for link [ %s ]: %s", defaultMTU, ipvlan.Name, err)
+		}
+		// Bring the netlink iface up
+		if err := netlink.LinkSetUp(ipvlan); err != nil {
+			log.Warnf("failed to enable the ipvlan netlink link: [ %v ]", ipvlan, err)
+		}
+
+		// SrcName gets renamed to DstPrefix on the container iface
+		ifname := &InterfaceName{
+			SrcName:   ipvlan.Name,
+			DstPrefix: containerEthPrefix,
+		}
+
+		// L2 ipvlan needs an explicit IP for a default GW in the container netns
+		if ipVlanMode == ipVlanL2 {
+			res = &joinResponse{
+				InterfaceName: *ifname,
+				Gateway:       driver.gateway,
+			}
+			defer objectResponse(w, res)
+		}
+		// ipvlan L3 mode doesnt need an IP for a default GW, just an iface dex.
+		if ipVlanMode == ipVlanL3 || ipVlanMode == ipVlanL3Routing {
+			res = &joinResponse{
+				InterfaceName: *ifname,
+			}
+			// Add a default route of only the interface inside the container
+			defaultRoute := &staticRoute{
+				Destination: defaultRoute,
+				RouteType:   types.CONNECTED,
+				NextHop:     "",
+			}
+			res.StaticRoutes = []*staticRoute{defaultRoute}
+		}
+
+	} else {
+		/* Using Docker -o options parameter */
+		mode, err := getIPVlanMode(getID.modeOpt)
+		if err != nil {
+			log.Errorf("error getting vlan mode [ %v ]: %s", mode, err)
+			return
+		}
+
+		// Get the link for the master index (Example: the docker host eth iface)
+		hostEth, err := netlink.LinkByName(ipVlanEthIface)
+		if err != nil {
+			log.Warnf("Error looking up the parent iface [ %s ] error: [ %s ]", ipVlanEthIface, err)
+		}
+		ipvlan := &netlink.IPVlan{
+			LinkAttrs: netlink.LinkAttrs{
+				Name:        preMoveName,
+				ParentIndex: hostEth.Attrs().Index,
+				TxQLen:      TxQueueLen,
+			},
+			Mode: mode,
+		}
+		if err := netlink.LinkAdd(ipvlan); err != nil {
+			log.Warnf("Failed to create the netlink link: [ %v ] with the "+
+				"error: %s Note: a parent index cannot be link to both ipvlan "+
+				"and ipvlan simultaneously. A new parent index is required", ipvlan, err)
+			log.Warnf("Also check `/var/run/docker/netns/` for orphaned links to unmount and delete, then restart the plugin")
+			log.Warnf("Run this to clean orphaned links 'umount /var/run/docker/netns/* && rm /var/run/docker/netns/*'")
+		}
+		log.Infof("Created ipvlan link: [ %s ] with a mode: [ %s ]", ipvlan.Name, ipVlanMode)
+		// Set the netlink iface MTU, default is 1500
+		if err := netlink.LinkSetMTU(ipvlan, defaultMTU); err != nil {
+			log.Errorf("Error setting the MTU [ %d ] for link [ %s ]: %s", defaultMTU, ipvlan.Name, err)
+		}
+		// Bring the netlink iface up
+		if err := netlink.LinkSetUp(ipvlan); err != nil {
+			log.Warnf("failed to enable the ipvlan netlink link: [ %v ]", ipvlan, err)
+		}
+		// SrcName gets renamed to DstPrefix on the container iface
+		ifname := &InterfaceName{
+			SrcName:   ipvlan.Name,
+			DstPrefix: containerEthPrefix,
+		}
+		// L2 ipvlan needs an explicit IP for a default GW in the container netns
+		if ipVlanMode == ipVlanL2 {
+			res = &joinResponse{
+				InterfaceName: *ifname,
+				Gateway:       driver.gateway,
+			}
+			defer objectResponse(w, res)
+		}
+
+		// ipvlan L3 mode doesnt need an IP for a default GW, just an iface dex.
+		if ipVlanMode == ipVlanL3 || ipVlanMode == ipVlanL3Routing {
+			res = &joinResponse{
+				InterfaceName: *ifname,
+			}
+			// Add a default route of only the interface inside the container
+			defaultRoute := &staticRoute{
+				Destination: defaultRoute,
+				RouteType:   types.CONNECTED,
+				NextHop:     "",
+			}
+			res.StaticRoutes = []*staticRoute{defaultRoute}
+		}
 	}
 	log.Debugf("Join response: %+v", res)
 	// Send the response to libnetwork

@@ -1,13 +1,6 @@
 ipvlan-docker-plugin
 =================
 
-This repo is for examples of a plugin w/ libnetwork and temporary until we get Ipvlan/Macvlan native driver support in Docker which will be
-relatively soon. This will deprecate in order to focus on much more interesting Gopher networking scenarios like integrations with nerdy network
-knobs such as [osrg/gobgp](https://github.com/osrg/gobgp/) or different underlay integrations. 802.1q should be supported by virtue of subinterfaces
-with macvlan/ipvlan with native drivers. While it can be supported here, the effort would be kind of wasted since we will get it native soon so
-hang tight for trunks.
-
-
 ipvlan is a lightweight L2 and L3 network implementation that does not require traditional bridges and is generally pretty kewl.
 
 ### Pre-Requisites
@@ -41,43 +34,82 @@ distribution repo or docker repos.
 
 ```
 $ docker -v
-Docker version 1.9.0, build 76d6bc9
+Docker version 1.9.1, build a34a1d5
 
 # -D is optional debugging
-$ docker-latest  daemon -D
+$ docker  daemon -D
 ```
 
+**2.**  Start the driver.
 
-**2.**  Start the driver in L2 mode.
+In the repo directory, use the binary named `ipvlan-docker-plugin-0.2-Linux-x86_64`. The binary can of course be renamed.
 
-- *Note:* The host-interface flag is the Docker host's eth interface. It shouldnt be required for the driver but this is a bit lazy and isnt
-honoring docker network opts yet.
-
-In the repo directory, use the binary named `ipvlan-docker-plugin-0.2-Linux-x86_64`. Feel free to rename it :)
 ```
-# -d is debug
-#  --host-interface is the master interface, eth0, eth1 etc. The docker network create needs to correspond to that subnet for L2 mode
-
 $ cd binaries
-$ ./ipvlan-docker-plugin-0.2-Linux-x86_64 -d --host-interface=eth1 --mode=l2
+$ ./ipvlan-docker-plugin-0.2-Linux-x86_64 -d
+
+# (optional debug flag) -d
 ```
 
 **3.** Create a network with Docker
 
-Note, the subnet needs to correspond to the master interface. a TODO is to honor the Docker opts that will enable multiple master interfaces for
-subinterfaces and other ethX interfaces at once. Opts from Docker network are parsed, just not honored. Adding that to a native driver into
-libnetwork will be easier and more likely then anyone doing it here.
+Note, the subnet needs to correspond to the master interface.
+
+The mode and host interface options are required. Use the interface on the subnet you want the containers to be on. In the following example, `eth1` of the host OS is on `192.168.1.0/24`.
+
+- `-o host_iface=eth1`
+- `-o mode=l2`
 
 ```
- network  create  -d ipvlan  --subnet=192.168.1.0/24 --gateway=192.168.1.1 -o host_iface=eth1 net1
+$ docker network  create  -d ipvlan  --subnet=192.168.1.0/24 --gateway=192.168.1.1 -o host_iface=eth1 -o mode=l2  net1
 ```
 
-**3.** Create a network with Docker
+**4.** Start some docker containers
 
- Run some containers, specify the network and verify they can ping one another
+Run some containers, specify the network and verify they can ping one another
 
 ```
-docker run --net=net1 -it --rm ubuntu
+$ docker run --net=net1 -it --rm ubuntu
+```
+
+### Ipvlan 802.1q Trunk L2 Mode Example Usage ###
+
+This example can also be run up to a ToR switch with a .1q trunk. To test on a localhost, Vlan 20 should not be able to ping Vlan 30 without being routed by an upstream router/gateway. All containers inside of the Vlan should be able to ping one another. The default namespace (example: eth0 on docker host) is not reachable via icmp per ipvlan arch.
+
+Start the plugin the same as the above example (-d for debug) along with the Docker daemon running `$ docker daemon`:
+
+```
+$ ./ipvlan-docker-plugin-0.2-Linux-x86_64 -d
+```
+
+**Vlan ID 20**
+
+```
+# create a new subinterface tied to dot1q vlan 20
+ip link add link eth1 name eth1.20 type vlan id 20
+
+# enable the new sub-interface
+$ ip link set eth1.20 up
+
+# now add networks and hosts as you would normally by attaching to the master (sub)interface that is tagged
+$ docker network  create  -d ipvlan  --subnet=192.168.20.0/24 --gateway=192.168.20.1 -o host_iface=eth1.20 ipvlan101
+$ docker run --net=ipvlan101 -it --name ivlan_test1 --rm ubuntu
+$ docker run --net=ipvlan101 -it --name ivlan_test2 --rm ubuntu
+```
+
+**Vlan ID 30**
+
+```
+# create a new subinterface tied to dot1q vlan 30
+$ ip link add link eth1 name eth1.30 type vlan id 30
+
+# enable the new sub-interface
+$ ip link set eth1.30 up
+
+# now add networks and hosts as you would normally by attaching to the master (sub)interface that is tagged
+$ docker network  create  -d ipvlan  --subnet=192.168.30.0/24 --gateway=192.168.30.1 -o host_iface=eth1.30 ipvlan130
+$ docker run --net=ipvlan130 -it --name ivlan_test3 --rm ubuntu
+$ docker run --net=ipvlan130 -it --name ivlan_test4 --rm ubuntu
 ```
 
 ### Example L3 Mode
