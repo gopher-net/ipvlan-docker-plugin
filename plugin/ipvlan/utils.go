@@ -2,7 +2,6 @@ package ipvlan
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net"
 
 	log "github.com/Sirupsen/logrus"
@@ -15,14 +14,6 @@ func makeMac(ip net.IP) string {
 	hw[1] = 0x42
 	copy(hw[2:], ip.To4())
 	return hw.String()
-}
-
-func readResolvConf() ([]byte, error) {
-	resolv, err := ioutil.ReadFile("/etc/resolv.conf")
-	if err != nil {
-		return nil, err
-	}
-	return resolv, nil
 }
 
 // Return the IPv4 address of a network interface
