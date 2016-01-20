@@ -45,7 +45,7 @@ func (driver *driver) setInterfaceIP(name string, rawIP string) error {
 	if err != nil {
 		return err
 	}
-	addr := &netlink.Addr{ipNet, ""}
+	addr := &netlink.Addr{IPNet: ipNet, Label: ""}
 	return netlink.AddrAdd(iface, addr)
 }
 
