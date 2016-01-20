@@ -28,6 +28,7 @@ type BgpRouteManager struct {
 	neighborkey   string
 	asnum         string
 	neighborlist  map[string]string
+	ModPathCh     chan *api.Path
 }
 
 func NewBgpRouteManager(masterIface string, server net.IP, as string) *BgpRouteManager {
@@ -36,6 +37,7 @@ func NewBgpRouteManager(masterIface string, server net.IP, as string) *BgpRouteM
 		server:       server,
 		neighborlist: map[string]string{},
 		asnum:        as,
+		ModPathCh:    make(chan *api.Path),
 	}
 	consul.Register()
 	client := "localhost:8500"
@@ -168,6 +170,15 @@ func (b *BgpRouteManager) StartMonitoring() error {
 					}
 				}
 			}
+		case m := <-b.ModPathCh:
+			arg := &api.ModPathArguments{
+				Operation: api.Operation_ADD,
+				Resource:  api.Resource_GLOBAL,
+				Name:      "",
+				Path:      m,
+			}
+			_, err := b.bgpgrpcclient.ModPath(context.Background(), arg)
+			return err
 		}
 	}
 }
@@ -181,23 +192,23 @@ func (b *BgpRouteManager) monitorBestPath(RibCh chan *api.Path) error {
 	defer conn.Close()
 	client := api.NewGobgpApiClient(conn)
 
+	table := &api.Table{
+		Type:   api.Resource_GLOBAL,
+		Family: uint32(bgp.RF_IPv4_UC),
+		Name:   "",
+	}
 	arg := &api.Arguments{
 		Resource: api.Resource_GLOBAL,
-		Rf:       uint32(bgp.RF_IPv4_UC),
+		Family:   uint32(bgp.RF_IPv4_UC),
 	}
+
 	err = func() error {
-		stream, err := client.GetRib(context.Background(), arg)
+		rib, err := client.GetRib(context.Background(), table)
 		if err != nil {
 			return err
 		}
-		for {
-			dst, err := stream.Recv()
-			if err == io.EOF {
-				break
-			} else if err != nil {
-				return err
-			}
-			for _, p := range dst.Paths {
+		for _, d := range rib.Destinations {
+			for _, p := range d.Paths {
 				if p.Best {
 					RibCh <- p
 					break
@@ -239,28 +250,7 @@ func (b *BgpRouteManager) AdvertizeNewRoute(localPrefix *net.IPNet) error {
 	path.Pattrs = append(path.Pattrs, n)
 	origin, _ := bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_IGP).Serialize()
 	path.Pattrs = append(path.Pattrs, origin)
-	arg := &api.ModPathArguments{
-		Resource: api.Resource_GLOBAL,
-		Paths:    []*api.Path{path},
-	}
-	stream, err := b.bgpgrpcclient.ModPath(context.Background())
-	if err != nil {
-		return err
-	}
-
-	err = stream.Send(arg)
-	if err != nil {
-		return err
-	}
-	stream.CloseSend()
-
-	res, err := stream.CloseAndRecv()
-	if err != nil {
-		return err
-	}
-	if res.Code != api.Error_SUCCESS {
-		return fmt.Errorf("error: code: %d, msg: %s\n", res.Code, res.Msg)
-	}
+	b.ModPathCh <- path
 	return nil
 }
 func (b *BgpRouteManager) WithdrawRoute(localPrefix *net.IPNet) error {
@@ -275,28 +265,7 @@ func (b *BgpRouteManager) WithdrawRoute(localPrefix *net.IPNet) error {
 	path.Pattrs = append(path.Pattrs, n)
 	origin, _ := bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_IGP).Serialize()
 	path.Pattrs = append(path.Pattrs, origin)
-	arg := &api.ModPathArguments{
-		Resource: api.Resource_GLOBAL,
-		Paths:    []*api.Path{path},
-	}
-	stream, err := b.bgpgrpcclient.ModPath(context.Background())
-	if err != nil {
-		return err
-	}
-
-	err = stream.Send(arg)
-	if err != nil {
-		return err
-	}
-	stream.CloseSend()
-
-	res, err := stream.CloseAndRecv()
-	if err != nil {
-		return err
-	}
-	if res.Code != api.Error_SUCCESS {
-		return fmt.Errorf("error: code: %d, msg: %s\n", res.Code, res.Msg)
-	}
+	b.ModPathCh <- path
 	return nil
 }
 func (cache *RibCache) handleBgpRibMonitor(routeMonitor *api.Path) (*RibLocal, error) {
