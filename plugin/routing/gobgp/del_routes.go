@@ -27,10 +27,9 @@ func cleanExistingRoutes(ifaceStr string) error {
 		log.Errorf("Unable to retreive a usable IP via ethernet interface: %s", ifaceStr)
 		return err
 	}
-	fmt.Printf("route len %d", len(routes))
 	for _, route := range routes {
 		if route.Dst == nil {
-			fmt.Printf("route Dst is nil!")
+			log.Debugf("Ignoring route [ %v ] Dst is nil", route)
 			continue
 		}
 		fmt.Printf(route.Src.String())

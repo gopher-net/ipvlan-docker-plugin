@@ -11,7 +11,6 @@ var (
 	FlagMtu            = cli.IntFlag{Name: "mtu", Value: cliMTU, Usage: "MTU of the container interface (default: 1500)"}
 	FlagIpvlanEthIface = cli.StringFlag{Name: "host-interface", Value: ipVlanEthIface, Usage: "(required) interface that the container will be communicating outside of the docker host with"}
 	FlagRoutingManager = cli.StringFlag{Name: "routemng", Value: routingManager, Usage: "name of the routing manager name [gobgp]. (default: gobgp)"}
-	FlagServerAddr     = cli.StringFlag{Name: "serveraddr", Value: ServerAddr, Usage: "ID of the bgp router. (default: 127.0.0.1)"}
 	FlagBgpAs          = cli.StringFlag{Name: "as", Value: BgpAs, Usage: "AS number of bgp router. (default: 65000)"}
 )
 
@@ -23,6 +22,5 @@ var (
 	gatewayIP      = ""               // GW required for L2. increment network addr+1 if not defined
 	cliMTU         = 1500
 	routingManager = "gobgp"
-	ServerAddr     = "127.0.0.1"
 	BgpAs          = "65000"
 )

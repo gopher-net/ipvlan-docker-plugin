@@ -108,19 +108,15 @@ func New(version string, ctx *cli.Context) (Driver, error) {
 		ipVlanMode = ipVlanL3Routing
 		//containerGW = nil
 		managermode := ""
-		serveraddr := net.ParseIP("127.0.0.1")
 		as := "65000"
 		if ctx.String("routemng") != "" {
 			managermode = ctx.String("routemng")
-		}
-		if ctx.String("serveraddr") != "" {
-			serveraddr = net.ParseIP(ctx.String("serveraddr"))
 		}
 		if ctx.String("as") != "" {
 			as = ctx.String("as")
 		}
 		// Initialize Routing monitoring
-		go routing.InitRoutingMonitering(ipVlanEthIface, managermode, serveraddr, as)
+		go routing.InitRoutingMonitering(ipVlanEthIface, managermode, as)
 
 	default:
 		log.Debugf("Field [ mode ] not detected. Assuming it will be passed via docker network -o (opts)")
@@ -159,6 +155,8 @@ func (driver *driver) Listen(socket string) error {
 	handleMethod("EndpointOperInfo", driver.infoEndpoint)
 	handleMethod("Join", driver.joinEndpoint)
 	handleMethod("Leave", driver.leaveEndpoint)
+	handleMethod("DiscoverNew", driver.discoverNew)
+	handleMethod("DiscoverDelete", driver.discoverDelete)
 	var (
 		listener net.Listener
 		err      error
@@ -221,7 +219,7 @@ type capabilitiesResp struct {
 
 func (driver *driver) capabilities(w http.ResponseWriter, r *http.Request) {
 	err := json.NewEncoder(w).Encode(&capabilitiesResp{
-		"local",
+		"global",
 	})
 	if err != nil {
 		log.Fatalf("capabilities encode: %s", err)
@@ -690,6 +688,44 @@ func (driver *driver) leaveEndpoint(w http.ResponseWriter, r *http.Request) {
 	log.Debugf("Leave request: %+v", &l)
 	emptyResponse(w)
 	log.Debugf("Leave %s:%s", l.NetworkID, l.EndpointID)
+}
+
+type newhost struct {
+	DiscoveryType int
+	DiscoveryData map[string]interface{}
+}
+
+func (driver *driver) discoverNew(w http.ResponseWriter, r *http.Request) {
+	var n newhost
+	if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
+		sendError(w, "Could not decode JSON encode payload", http.StatusBadRequest)
+		return
+	}
+	log.Debugf("Discover new request:%v", n)
+	isself, _ := n.DiscoveryData["Self"].(bool)
+	Address, _ := n.DiscoveryData["Address"].(string)
+	if ipVlanMode == ipVlanL3Routing {
+		routing.DiscoverNew(isself, Address)
+	}
+}
+
+type delhost struct {
+	DiscoveryType int
+	DiscoveryData map[string]interface{}
+}
+
+func (driver *driver) discoverDelete(w http.ResponseWriter, r *http.Request) {
+	var d delhost
+	if err := json.NewDecoder(r.Body).Decode(&d); err != nil {
+		sendError(w, "Could not decode JSON encode payload", http.StatusBadRequest)
+		return
+	}
+	log.Debugf("Discover delete request:%v", d)
+	isself, _ := d.DiscoveryData["Self"].(bool)
+	Address, _ := d.DiscoveryData["Address"].(string)
+	if ipVlanMode == ipVlanL3Routing {
+		routing.DiscoverDelete(isself, Address)
+	}
 }
 
 func (driver *driver) natOut() error {
