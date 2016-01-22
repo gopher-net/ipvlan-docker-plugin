@@ -23,7 +23,9 @@ type BgpRouteManager struct {
 	ethIface      string
 	bgpgrpcclient api.GobgpApiClient
 	learnedRoutes []RibLocal
+	bgpGlobalcfg  *api.Global
 	asnum         int
+	neighborlist  []string
 	ModPathCh     chan *api.Path
 	ModPeerCh     chan *api.ModNeighborArguments
 }
@@ -35,20 +37,19 @@ func NewBgpRouteManager(masterIface string, as string) *BgpRouteManager {
 		a = 65000
 	}
 	b := &BgpRouteManager{
-		ethIface:  masterIface,
-		asnum:     a,
-		ModPathCh: make(chan *api.Path),
-		ModPeerCh: make(chan *api.ModNeighborArguments),
+		ethIface:     masterIface,
+		asnum:        a,
+		bgpGlobalcfg: nil,
+		ModPathCh:    make(chan *api.Path),
+		ModPeerCh:    make(chan *api.ModNeighborArguments),
 	}
 	return b
 }
 func (b *BgpRouteManager) SetBgpConfig(RouterId string) error {
+	b.bgpGlobalcfg = &api.Global{As: uint32(b.asnum), RouterId: RouterId}
 	_, err := b.bgpgrpcclient.ModGlobalConfig(context.Background(), &api.ModGlobalConfigArguments{
 		Operation: api.Operation_ADD,
-		Global: &api.Global{
-			As:       uint32(b.asnum),
-			RouterId: RouterId,
-		},
+		Global:    b.bgpGlobalcfg,
 	})
 	if err != nil {
 		return err
@@ -238,12 +239,22 @@ func (b *BgpRouteManager) DiscoverNew(isself bool, Address string) error {
 		if error != nil {
 			return error
 		}
-	} else {
-		log.Debugf("BGP neighbor add %s", Address)
-		error := b.ModPeer(Address, api.Operation_ADD)
-		if error != nil {
-			return error
+		for _, n_addr := range b.neighborlist {
+			log.Debugf("BGP neighbor add %s", n_addr)
+			error := b.ModPeer(n_addr, api.Operation_ADD)
+			if error != nil {
+				return error
+			}
 		}
+	} else {
+		if b.bgpGlobalcfg != nil {
+			log.Debugf("BGP neighbor add %s", Address)
+			error := b.ModPeer(Address, api.Operation_ADD)
+			if error != nil {
+				return error
+			}
+		}
+		b.neighborlist = append(b.neighborlist, Address)
 	}
 	return nil
 }
@@ -252,10 +263,12 @@ func (b *BgpRouteManager) DiscoverDelete(isself bool, Address string) error {
 	if isself {
 		return nil
 	} else {
-		log.Debugf("BGP neighbor del %s", Address)
-		error := b.ModPeer(Address, api.Operation_DEL)
-		if error != nil {
-			return error
+		if b.bgpGlobalcfg != nil {
+			log.Debugf("BGP neighbor del %s", Address)
+			error := b.ModPeer(Address, api.Operation_DEL)
+			if error != nil {
+				return error
+			}
 		}
 	}
 	return nil
