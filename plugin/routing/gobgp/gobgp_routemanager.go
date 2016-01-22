@@ -28,6 +28,8 @@ type BgpRouteManager struct {
 	neighborlist  []string
 	ModPathCh     chan *api.Path
 	ModPeerCh     chan *api.ModNeighborArguments
+	RibCh         chan *api.Path
+	autoconfig    bool
 }
 
 func NewBgpRouteManager(masterIface string, as string) *BgpRouteManager {
@@ -42,6 +44,7 @@ func NewBgpRouteManager(masterIface string, as string) *BgpRouteManager {
 		bgpGlobalcfg: nil,
 		ModPathCh:    make(chan *api.Path),
 		ModPeerCh:    make(chan *api.ModNeighborArguments),
+		RibCh:        make(chan *api.Path),
 	}
 	return b
 }
@@ -55,6 +58,7 @@ func (b *BgpRouteManager) SetBgpConfig(RouterId string) error {
 		return err
 	}
 	log.Debugf("Set BGP Global config: as %d, router id %v", b.asnum, RouterId)
+	go b.monitorBestPath(b.RibCh)
 	return nil
 }
 
@@ -73,12 +77,19 @@ func (b *BgpRouteManager) StartMonitoring() error {
 	}
 	defer conn.Close()
 	b.bgpgrpcclient = api.NewGobgpApiClient(conn)
-	RibCh := make(chan *api.Path)
-	go b.monitorBestPath(RibCh)
-	log.Info("Initialization complete, now monitoring BGP for new routes..")
+	g, err := b.bgpgrpcclient.GetGlobalConfig(context.Background(), &api.Arguments{})
+	if err != nil {
+		b.autoconfig = true
+		log.Info("Config file is not detectd. Configuration with hostdiscovery and grpc")
+	} else {
+		b.autoconfig = false
+		log.Infof("Config file is detectd. Global config %v", g)
+		go b.monitorBestPath(b.RibCh)
+	}
+	log.Info("Initialization complete")
 	for {
 		select {
-		case p := <-RibCh:
+		case p := <-b.RibCh:
 			monitorUpdate, err := bgpCache.handleBgpRibMonitor(p)
 
 			if err != nil {
@@ -234,6 +245,9 @@ func (b *BgpRouteManager) ModPeer(peeraddr string, operation api.Operation) erro
 }
 
 func (b *BgpRouteManager) DiscoverNew(isself bool, Address string) error {
+	if !b.autoconfig {
+		return nil
+	}
 	if isself {
 		error := b.SetBgpConfig(Address)
 		if error != nil {
@@ -260,6 +274,9 @@ func (b *BgpRouteManager) DiscoverNew(isself bool, Address string) error {
 }
 
 func (b *BgpRouteManager) DiscoverDelete(isself bool, Address string) error {
+	if !b.autoconfig {
+		return nil
+	}
 	if isself {
 		return nil
 	} else {
