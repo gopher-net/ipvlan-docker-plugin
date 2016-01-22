@@ -514,9 +514,10 @@ type staticRoute struct {
 }
 
 type joinResponse struct {
-	Gateway       string
-	InterfaceName InterfaceName
-	StaticRoutes  []*staticRoute
+	Gateway               string
+	InterfaceName         InterfaceName
+	StaticRoutes          []*staticRoute
+	DisableGatewayService bool
 }
 
 func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -583,15 +584,17 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 		// L2 ipvlan needs an explicit IP for a default GW in the container netns
 		if ipVlanMode == ipVlanL2 {
 			res = &joinResponse{
-				InterfaceName: *ifname,
-				Gateway:       driver.gateway,
+				InterfaceName:         *ifname,
+				Gateway:               driver.gateway,
+				DisableGatewayService: false,
 			}
 			defer objectResponse(w, res)
 		}
 		// ipvlan L3 mode doesnt need an IP for a default GW, just an iface dex.
 		if ipVlanMode == ipVlanL3 || ipVlanMode == ipVlanL3Routing {
 			res = &joinResponse{
-				InterfaceName: *ifname,
+				InterfaceName:         *ifname,
+				DisableGatewayService: true,
 			}
 			// Add a default route of only the interface inside the container
 			defaultRoute := &staticRoute{
