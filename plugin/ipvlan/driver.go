@@ -218,8 +218,12 @@ type capabilitiesResp struct {
 }
 
 func (driver *driver) capabilities(w http.ResponseWriter, r *http.Request) {
+	var driver_scope = "local"
+	if ipVlanMode == ipVlanL3Routing {
+		driver_scope = "global"
+	}
 	err := json.NewEncoder(w).Encode(&capabilitiesResp{
-		"global",
+		driver_scope,
 	})
 	if err != nil {
 		log.Fatalf("capabilities encode: %s", err)
