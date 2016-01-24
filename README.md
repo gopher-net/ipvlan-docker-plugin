@@ -114,7 +114,12 @@ $ docker run --net=ipvlan130 -it --name ivlan_test4 --rm ubuntu
 
 ### Example L3 Mode
 
-TODO: Test me.
+TODO
+
+### Go-BGP L3 mode integration
+
+See the [README](https://github.com/gopher-net/ipvlan-docker-plugin/blob/master/plugin/routing/routing-manager.md) in the Go-BGP integration section (killer next-gen BGP daemon from [OSRG](https://github.com/osrg/gobgp)). 
+
 
 ### Notes and General IPVlan Caveats
 
