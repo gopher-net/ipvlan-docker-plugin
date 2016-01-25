@@ -5,83 +5,60 @@ import (
 	"net"
 
 	log "github.com/Sirupsen/logrus"
-	"github.com/docker/libkv"
-	"github.com/docker/libkv/store"
-	"github.com/docker/libkv/store/consul"
 	api "github.com/osrg/gobgp/api"
 	"github.com/osrg/gobgp/packet"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"io"
 	"strconv"
-	"strings"
 	"time"
+)
+
+const (
+	GrcpServer = "127.0.0.1:50051"
 )
 
 type BgpRouteManager struct {
 	// Master interface for IPVlan and BGP peering source
 	ethIface      string
-	server        net.IP
 	bgpgrpcclient api.GobgpApiClient
 	learnedRoutes []RibLocal
-	kv            store.Store
-	neighborkey   string
-	asnum         string
-	neighborlist  map[string]string
+	bgpGlobalcfg  *api.Global
+	asnum         int
+	neighborlist  []string
 	ModPathCh     chan *api.Path
+	ModPeerCh     chan *api.ModNeighborArguments
+	RibCh         chan *api.Path
+	autoconfig    bool
 }
 
-func NewBgpRouteManager(masterIface string, server net.IP, as string) *BgpRouteManager {
+func NewBgpRouteManager(masterIface string, as string) *BgpRouteManager {
+	a, err := strconv.Atoi(as)
+	if err != nil {
+		log.Errorf("AS number must be only numeral %s, using default AS num: 65000", as)
+		a = 65000
+	}
 	b := &BgpRouteManager{
 		ethIface:     masterIface,
-		server:       server,
-		neighborlist: map[string]string{},
-		asnum:        as,
+		asnum:        a,
+		bgpGlobalcfg: nil,
 		ModPathCh:    make(chan *api.Path),
+		ModPeerCh:    make(chan *api.ModNeighborArguments),
+		RibCh:        make(chan *api.Path),
 	}
-	consul.Register()
-	client := "localhost:8500"
-	kv, err := libkv.NewStore(
-		store.CONSUL, // or "consul"
-		[]string{client},
-		&store.Config{
-			ConnectionTimeout: 10 * time.Second,
-		},
-	)
-	b.kv = kv
-	if err != nil {
-		log.Fatal("Cannot create store consul")
-	}
-	b.neighborkey = "bgpneighbor"
-	if exist, _ := kv.Exists(b.neighborkey); exist == false {
-		err := b.kv.Put(b.neighborkey, []byte("bgpneighbor"), &store.WriteOptions{IsDir: true})
-		if err != nil {
-			fmt.Errorf("Something went wrong when initializing key %v", b.neighborkey)
-		}
-	}
-	err = b.kv.Put(b.neighborkey+"/"+server.String(), []byte(as), nil)
-	if err != nil {
-		log.Errorf("Error trying to put value at key: %v", b.neighborkey)
-	}
-
 	return b
 }
-func (b *BgpRouteManager) SetBgpConfig() error {
-	a, err := strconv.Atoi(b.asnum)
-	if err != nil {
-		return err
-	}
-	_, err = b.bgpgrpcclient.ModGlobalConfig(context.Background(), &api.ModGlobalConfigArguments{
+func (b *BgpRouteManager) SetBgpConfig(RouterId string) error {
+	b.bgpGlobalcfg = &api.Global{As: uint32(b.asnum), RouterId: RouterId}
+	_, err := b.bgpgrpcclient.ModGlobalConfig(context.Background(), &api.ModGlobalConfigArguments{
 		Operation: api.Operation_ADD,
-		Global: &api.Global{
-			As:       uint32(a),
-			RouterId: b.server.String(),
-		},
+		Global:    b.bgpGlobalcfg,
 	})
 	if err != nil {
 		return err
 	}
-	log.Debugf("Set BGP Global config: as %d, router id %v", b.asnum, b.server)
+	log.Debugf("Set BGP Global config: as %d, router id %v", b.asnum, RouterId)
+	go b.monitorBestPath(b.RibCh)
 	return nil
 }
 
@@ -94,25 +71,25 @@ func (b *BgpRouteManager) StartMonitoring() error {
 		BgpTable: make(map[string]*RibLocal),
 	}
 	timeout := grpc.WithTimeout(time.Second)
-	conn, err := grpc.Dial("127.0.0.1:8080", timeout, grpc.WithBlock(), grpc.WithInsecure())
+	conn, err := grpc.Dial(GrcpServer, timeout, grpc.WithBlock(), grpc.WithInsecure())
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer conn.Close()
 	b.bgpgrpcclient = api.NewGobgpApiClient(conn)
-	RibCh := make(chan *api.Path)
-	go b.monitorBestPath(RibCh)
-	stopCh := make(<-chan struct{})
-	events, err := b.kv.WatchTree(b.neighborkey, stopCh)
+	g, err := b.bgpgrpcclient.GetGlobalConfig(context.Background(), &api.Arguments{})
 	if err != nil {
-		log.Errorf("Error trying to WatchTree: %v", err)
+		b.autoconfig = true
+		log.Info("Config file is not detectd. Configuration with hostdiscovery and grpc")
+	} else {
+		b.autoconfig = false
+		log.Infof("Config file is detectd. Global config %v", g)
+		go b.monitorBestPath(b.RibCh)
 	}
-	b.SetBgpConfig()
-
-	log.Info("Initialization complete, now monitoring BGP for new routes..")
+	log.Info("Initialization complete")
 	for {
 		select {
-		case p := <-RibCh:
+		case p := <-b.RibCh:
 			monitorUpdate, err := bgpCache.handleBgpRibMonitor(p)
 
 			if err != nil {
@@ -134,7 +111,7 @@ func (b *BgpRouteManager) StartMonitoring() error {
 
 					err = addNetlinkRoute(monitorUpdate.BgpPrefix, monitorUpdate.NextHop, b.ethIface)
 					if err != nil {
-						log.Debugf("Add route results [ %s ]", err)
+						log.Debugf("Error Adding route results [ %s ]", err)
 					}
 
 					log.Infof("Updated the local prefix cache from the newly learned BGP update:")
@@ -144,48 +121,37 @@ func (b *BgpRouteManager) StartMonitoring() error {
 				}
 			}
 			log.Debugf("Verbose update details: %s", monitorUpdate)
-		case neighbors := <-events:
-			for _, neighbor := range neighbors {
-				neighboraddr := strings.Split(neighbor.Key, "/")[1]
-				_, ok := b.neighborlist[neighboraddr]
-				if neighboraddr != b.server.String() && !ok {
-					b.neighborlist[neighboraddr] = string(neighbor.Value)
-					neighborAS, _ := strconv.ParseUint(string(neighbor.Value), 10, 32)
-					log.Debugf("BGP neighbor add %s", neighboraddr)
-					peer := &api.Peer{
-						// TODO: Debug Unresolved in Gobgp API master
-						// NighborAddress: neighboraddr,
-						Conf: &api.PeerConf{
-							NeighborAddress: neighboraddr,
-							PeerAs:          uint32(neighborAS),
-						},
-					}
-					arg := &api.ModNeighborArguments{
-						Operation: api.Operation_ADD,
-						Peer:      peer,
-					}
-					_, err := b.bgpgrpcclient.ModNeighbor(context.Background(), arg)
-					if err != nil {
-						return err
-					}
-				}
+
+		case arg := <-b.ModPeerCh:
+			_, err := b.bgpgrpcclient.ModNeighbor(context.Background(), arg)
+			log.Debugf("Mod Peer with grpc %v", arg)
+			if err != nil {
+				return err
 			}
-		case m := <-b.ModPathCh:
+
+		case path := <-b.ModPathCh:
+			n, _ := bgp.NewPathAttributeNextHop("0.0.0.0").Serialize()
+			path.Pattrs = append(path.Pattrs, n)
+			origin, _ := bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_IGP).Serialize()
+			path.Pattrs = append(path.Pattrs, origin)
 			arg := &api.ModPathArguments{
 				Operation: api.Operation_ADD,
 				Resource:  api.Resource_GLOBAL,
 				Name:      "",
-				Path:      m,
+				Path:      path,
 			}
+			log.Debugf("Mod Path with grcp %v", arg)
 			_, err := b.bgpgrpcclient.ModPath(context.Background(), arg)
-			return err
+			if err != nil {
+				return err
+			}
 		}
 	}
 }
 
 func (b *BgpRouteManager) monitorBestPath(RibCh chan *api.Path) error {
 	timeout := grpc.WithTimeout(time.Second)
-	conn, err := grpc.Dial("127.0.0.1:8080", timeout, grpc.WithBlock(), grpc.WithInsecure())
+	conn, err := grpc.Dial(GrcpServer, timeout, grpc.WithBlock(), grpc.WithInsecure())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -246,13 +212,10 @@ func (b *BgpRouteManager) AdvertizeNewRoute(localPrefix *net.IPNet) error {
 	}
 	localPrefixMask, _ := localPrefix.Mask.Size()
 	path.Nlri, _ = bgp.NewIPAddrPrefix(uint8(localPrefixMask), localPrefix.IP.String()).Serialize()
-	n, _ := bgp.NewPathAttributeNextHop("0.0.0.0").Serialize()
-	path.Pattrs = append(path.Pattrs, n)
-	origin, _ := bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_IGP).Serialize()
-	path.Pattrs = append(path.Pattrs, origin)
 	b.ModPathCh <- path
 	return nil
 }
+
 func (b *BgpRouteManager) WithdrawRoute(localPrefix *net.IPNet) error {
 	log.Infof("Withdraw this hosts container network [ %s ] from the BGP domain", localPrefix)
 	path := &api.Path{
@@ -261,11 +224,70 @@ func (b *BgpRouteManager) WithdrawRoute(localPrefix *net.IPNet) error {
 	}
 	localPrefixMask, _ := localPrefix.Mask.Size()
 	path.Nlri, _ = bgp.NewIPAddrPrefix(uint8(localPrefixMask), localPrefix.IP.String()).Serialize()
-	n, _ := bgp.NewPathAttributeNextHop("0.0.0.0").Serialize()
-	path.Pattrs = append(path.Pattrs, n)
-	origin, _ := bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_IGP).Serialize()
-	path.Pattrs = append(path.Pattrs, origin)
 	b.ModPathCh <- path
+	return nil
+}
+
+func (b *BgpRouteManager) ModPeer(peeraddr string, operation api.Operation) error {
+	peer := &api.Peer{
+		Conf: &api.PeerConf{
+			NeighborAddress: peeraddr,
+			PeerAs:          uint32(b.asnum),
+		},
+	}
+	arg := &api.ModNeighborArguments{
+		Operation: operation,
+		Peer:      peer,
+	}
+	log.Debugf("Mod peer arg: %v", arg)
+	b.ModPeerCh <- arg
+	return nil
+}
+
+func (b *BgpRouteManager) DiscoverNew(isself bool, Address string) error {
+	if !b.autoconfig {
+		return nil
+	}
+	if isself {
+		error := b.SetBgpConfig(Address)
+		if error != nil {
+			return error
+		}
+		for _, n_addr := range b.neighborlist {
+			log.Debugf("BGP neighbor add %s", n_addr)
+			error := b.ModPeer(n_addr, api.Operation_ADD)
+			if error != nil {
+				return error
+			}
+		}
+	} else {
+		if b.bgpGlobalcfg != nil {
+			log.Debugf("BGP neighbor add %s", Address)
+			error := b.ModPeer(Address, api.Operation_ADD)
+			if error != nil {
+				return error
+			}
+		}
+		b.neighborlist = append(b.neighborlist, Address)
+	}
+	return nil
+}
+
+func (b *BgpRouteManager) DiscoverDelete(isself bool, Address string) error {
+	if !b.autoconfig {
+		return nil
+	}
+	if isself {
+		return nil
+	} else {
+		if b.bgpGlobalcfg != nil {
+			log.Debugf("BGP neighbor del %s", Address)
+			error := b.ModPeer(Address, api.Operation_DEL)
+			if error != nil {
+				return error
+			}
+		}
+	}
 	return nil
 }
 func (cache *RibCache) handleBgpRibMonitor(routeMonitor *api.Path) (*RibLocal, error) {
