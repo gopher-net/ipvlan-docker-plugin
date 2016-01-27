@@ -19,7 +19,7 @@ func TestSystemBus(t *testing.T) {
 func TestSend(t *testing.T) {
 	bus, err := SessionBus()
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	ch := make(chan *Call, 1)
 	msg := &Message{
@@ -36,6 +36,30 @@ func TestSend(t *testing.T) {
 	<-ch
 	if call.Err != nil {
 		t.Error(call.Err)
+	}
+}
+
+func TestRemoveSignal(t *testing.T) {
+	bus, err := NewConn(nil)
+	if err != nil {
+		t.Error(err)
+	}
+	ch := make(chan *Signal)
+	ch2 := make(chan *Signal)
+	for _, ch := range []chan *Signal{ch, ch2, ch, ch2, ch2, ch} {
+		bus.Signal(ch)
+	}
+	if len(bus.signals) != 6 {
+		t.Errorf("remove signal: signals length not equal: got '%d', want '6'", len(bus.signals))
+	}
+	bus.RemoveSignal(ch)
+	if len(bus.signals) != 3 {
+		t.Errorf("remove signal: signals length not equal: got '%d', want '3'", len(bus.signals))
+	}
+	for _, bch := range bus.signals {
+		if bch != ch2 {
+			t.Errorf("remove signal: removed signal present: got '%v', want '%v'", bch, ch2)
+		}
 	}
 }
 

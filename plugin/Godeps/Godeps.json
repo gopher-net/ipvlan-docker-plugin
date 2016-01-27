@@ -1,65 +1,91 @@
 {
 	"ImportPath": "github.com/gopher-net/ipvlan-docker-plugin/plugin",
 	"GoVersion": "go1.5",
-	"Packages": [
-		"./..."
-	],
 	"Deps": [
 		{
 			"ImportPath": "github.com/Sirupsen/logrus",
-			"Comment": "v0.8.7",
-			"Rev": "418b41d23a1bf978c06faea5313ba194650ac088"
+			"Comment": "v0.8.7-55-gf7f79f7",
+			"Rev": "f7f79f729e0fbe2fcc061db48a9ba0263f588252"
 		},
 		{
 			"ImportPath": "github.com/codegangsta/cli",
-			"Comment": "1.2.0-137-gbca61c4",
-			"Rev": "bca61c476e3c752594983e4c9bcd5f62fb09f157"
+			"Comment": "1.2.0-193-gf9cc300",
+			"Rev": "f9cc3001e04f9783cb4ad08ca6791aa07134787c"
 		},
 		{
-			"ImportPath": "github.com/docker/docker/pkg/units",
-			"Comment": "v1.4.1-4106-g637023a",
-			"Rev": "637023a5f8d8347a0e271c09d5c9bc84fbc97693"
+			"ImportPath": "github.com/docker/go-units",
+			"Comment": "v0.1.0-23-g5d2041e",
+			"Rev": "5d2041e26a699eaca682e2ea41c8f891e1060444"
 		},
 		{
-			"ImportPath": "github.com/docker/libnetwork/ipallocator",
-			"Comment": "v0.2-484-g5395a29",
-			"Rev": "5395a29bd9ae5504aed5fb41d32941a1f80fe809"
+			"ImportPath": "github.com/docker/libnetwork/driverapi",
+			"Comment": "v0.5.6-21-g2eaae2c",
+			"Rev": "2eaae2c6688ef008ff2548d0f00105021d8e4946"
 		},
 		{
 			"ImportPath": "github.com/docker/libnetwork/iptables",
-			"Comment": "v0.2-484-g5395a29",
-			"Rev": "5395a29bd9ae5504aed5fb41d32941a1f80fe809"
-		},
-		{
-			"ImportPath": "github.com/docker/libnetwork/netutils",
-			"Comment": "v0.2-484-g5395a29",
-			"Rev": "5395a29bd9ae5504aed5fb41d32941a1f80fe809"
+			"Comment": "v0.5.6-21-g2eaae2c",
+			"Rev": "2eaae2c6688ef008ff2548d0f00105021d8e4946"
 		},
 		{
 			"ImportPath": "github.com/docker/libnetwork/types",
-			"Comment": "v0.2-484-g5395a29",
-			"Rev": "5395a29bd9ae5504aed5fb41d32941a1f80fe809"
+			"Comment": "v0.5.6-21-g2eaae2c",
+			"Rev": "2eaae2c6688ef008ff2548d0f00105021d8e4946"
 		},
 		{
 			"ImportPath": "github.com/godbus/dbus",
-			"Comment": "v2-3-g4160802",
-			"Rev": "41608027bdce7bfa8959d653a00b954591220e67"
+			"Comment": "v3-10-ge4593d6",
+			"Rev": "e4593d66e29678c26f84166fe231a03e0268ced5"
+		},
+		{
+			"ImportPath": "github.com/golang/protobuf/proto",
+			"Rev": "6aaa8d47701fa6cf07e914ec01fde3d4a1fe79c3"
 		},
 		{
 			"ImportPath": "github.com/gorilla/context",
-			"Rev": "215affda49addc4c8ef7e2534915df2c8c35c6cd"
+			"Rev": "1c83b3eabd45b6d76072b66b746c20815fb2872d"
 		},
 		{
 			"ImportPath": "github.com/gorilla/mux",
-			"Rev": "8096f47503459bcc74d1f4c487b7e6e42e5746b5"
+			"Rev": "26a6070f849969ba72b72256e9f14cf519751690"
+		},
+		{
+			"ImportPath": "github.com/osrg/gobgp/api",
+			"Comment": "v1.3-56-g0986a67",
+			"Rev": "0986a67e07aaa4253403f392a98b0ec483c5562c"
+		},
+		{
+			"ImportPath": "github.com/osrg/gobgp/packet",
+			"Comment": "v1.3-56-g0986a67",
+			"Rev": "0986a67e07aaa4253403f392a98b0ec483c5562c"
 		},
 		{
 			"ImportPath": "github.com/samalba/dockerclient",
-			"Rev": "5ba36c1ad5b75c34be407bfaac51bd02ccb8c654"
+			"Rev": "3c5f87482db1f82cf350f62aa5214aabd6016502"
 		},
 		{
 			"ImportPath": "github.com/vishvananda/netlink",
-			"Rev": "b8d3e51d2a985af316ce499e328f530f0f6e37a1"
+			"Rev": "5a5eb317d73bc513ae0cfea7d9ac3c39f145e1db"
+		},
+		{
+			"ImportPath": "golang.org/x/net/context",
+			"Rev": "2e9cee70ee697e0a2ef894b560dda50dec7dff58"
+		},
+		{
+			"ImportPath": "golang.org/x/net/http2",
+			"Rev": "2e9cee70ee697e0a2ef894b560dda50dec7dff58"
+		},
+		{
+			"ImportPath": "golang.org/x/net/internal/timeseries",
+			"Rev": "2e9cee70ee697e0a2ef894b560dda50dec7dff58"
+		},
+		{
+			"ImportPath": "golang.org/x/net/trace",
+			"Rev": "2e9cee70ee697e0a2ef894b560dda50dec7dff58"
+		},
+		{
+			"ImportPath": "google.golang.org/grpc",
+			"Rev": "5da22b92e9485c15a6b284d52cc54d6580864c99"
 		}
 	]
 }
