@@ -64,7 +64,7 @@ func ipIncrement(networkAddr net.IP) net.IP {
 	return networkAddr
 }
 
-func getIPVlanMode(s string) (netlink.IPVlanMode, error) {
+func setIpVlanMode(s string) (netlink.IPVlanMode, error) {
 	switch s {
 	case "", "l2":
 		return netlink.IPVLAN_MODE_L2, nil

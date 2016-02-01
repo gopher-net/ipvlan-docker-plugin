@@ -44,12 +44,9 @@ type Driver interface {
 
 type driver struct {
 	dockerer
-	networkID  string
-	gateway    string
-	cidr       *net.IPNet
+	networks   networkTable
 	nameserver string
 	pluginConfig
-	networks networkTable
 	sync.Mutex
 }
 
@@ -247,18 +244,18 @@ func (driver *driver) createNetwork(w http.ResponseWriter, r *http.Request) {
 		sendError(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	var netCidr *net.IPNet
+	var netGw string
 	log.Debugf("Network Create Called: [ %+v ]", create)
 	for _, v4 := range create.IpV4Data {
-		driver.gateway = v4.Gateway.IP.String()
-		driver.cidr = v4.Pool
+		netGw = v4.Gateway.IP.String()
+		netCidr = v4.Pool
 	}
-	driver.networkID = create.NetworkID
-	containerCidr := driver.cidr
-
 	n := &network{
-		id:        driver.networkID,
-		driver:    driver,
+		id:        create.NetworkID,
 		endpoints: endpointTable{},
+		cidr:      netCidr,
+		gateway:   netGw,
 	}
 	// Parse docker network -o opts
 	for k, v := range create.Options {
@@ -302,25 +299,25 @@ func (driver *driver) createNetwork(w http.ResponseWriter, r *http.Request) {
 	emptyResponse(w)
 
 	if ipVlanMode == ipVlanL3 {
-		log.Debugf("Adding route for the local ipvlan subnet [ %s ] in the default namespace using the specified host interface [ %s]", containerCidr.String(), ipVlanEthIface)
+		log.Debugf("Adding route for the local ipvlan subnet [ %s ] in the default namespace using the specified host interface [ %s]", netCidr.String(), ipVlanEthIface)
 		ipvlanParent, err := netlink.LinkByName(ipVlanEthIface)
 		// Add a route in the default NS to point to the IPVlan namespace subnet
-		addRouteIface(containerCidr, ipvlanParent)
+		addRouteIface(netCidr, ipvlanParent)
 		if err != nil {
 			log.Debugf("a problem occurred adding the container subnet default namespace route", err)
 		}
 	} else if ipVlanMode == ipVlanL3Routing {
-		log.Debugf("Adding route for the local ipvlan subnet [ %s ] in the default namespace using the specified host interface [ %s]", containerCidr.String(), ipVlanEthIface)
+		log.Debugf("Adding route for the local ipvlan subnet [ %s ] in the default namespace using the specified host interface [ %s]", netCidr.String(), ipVlanEthIface)
 		ipvlanParent, err := netlink.LinkByName(ipVlanEthIface)
 		// Add a route in the default NS to point to the IPVlan namespace subnet
-		addRouteIface(containerCidr, ipvlanParent)
+		addRouteIface(netCidr, ipvlanParent)
 		if err != nil {
 			log.Debugf("a problem occurred adding the container subnet default namespace route", err)
 		}
 
 		// Announce the local IPVLAN network to the other peers in the BGP cluster
-		log.Infof("New Docker network: [ %s ]", containerCidr.String())
-		err = routing.AdvertizeNewRoute(containerCidr)
+		log.Infof("New Docker network: [ %s ]", netCidr.String())
+		err = routing.AdvertizeNewRoute(netCidr)
 		if err != nil {
 			log.Fatalf("Error installing container route : %s", err)
 		}
@@ -348,22 +345,6 @@ func (driver *driver) deleteNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Debugf("Delete network request: %+v", &delete)
-	if delete.NetworkID != driver.networkID {
-		log.Debugf("network not found: %+v", &delete)
-		errorResponsef(w, "Network %s not found", nid)
-		return
-	}
-	driver.networkID = ""
-	emptyResponse(w)
-	log.Infof("Deleting plugin cache for network %s", nid)
-
-	if driver.networkID == "" {
-		log.Errorf("invalid network id")
-	}
-	n := driver.network(driver.networkID)
-	if n == nil {
-		log.Errorf("could not find network with id %s in plugin cache", nid)
-	}
 	driver.delNetwork(nid)
 }
 
@@ -406,26 +387,17 @@ func (driver *driver) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		sendError(w, "Unable to decode JSON payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	netID := create.NetworkID
 	endID := create.EndpointID
-
-	if netID != driver.networkID {
-		log.Warnf("Network not found, [ %s ]", netID)
-		errorResponsef(w, "No such network %s", netID)
-		return
-	}
 	log.Debugf("The container subnet for this context is [ %s ]", create.Interface.Address)
 	// Request an IP address from libnetwork based on the cidr scope
-	// TODO: Add a user defined static ip addr option
+	// TODO: Add a user defined static ip addr option in Docker v1.10
 	containerAddress := create.Interface.Address
 	if containerAddress == "" {
 		log.Errorf("Unable to obtain an IP address from libnetwork default ipam")
 		return
 	}
-
 	// generate a mac address for the pending container
 	mac := makeMac(net.ParseIP(containerAddress))
-
 	log.Infof("Allocated container IP: [ %s ]", containerAddress)
 	// IP addrs comes from libnetwork ipam via user 'docker network' parameters
 	respIface := &EndpointInterface{
@@ -452,10 +424,6 @@ func (driver *driver) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Debugf("Delete endpoint request: %+v", &delete)
 	emptyResponse(w)
-	// null check cidr in case driver restarted and doesnt know the network to avoid panic
-	if driver.cidr == nil {
-		return
-	}
 
 	log.Debugf("Delete endpoint %s", delete.EndpointID)
 
@@ -544,7 +512,7 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	/* Backward compatable for plugin options */
 	if getID.modeOpt == "" {
-		mode, err := getIPVlanMode(ipVlanMode)
+		mode, err := setIpVlanMode(ipVlanMode)
 		if err != nil {
 			log.Errorf("error getting vlan mode [ %v ]: %s", mode, err)
 			return
@@ -589,7 +557,7 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 		if ipVlanMode == ipVlanL2 {
 			res = &joinResponse{
 				InterfaceName:         *ifname,
-				Gateway:               driver.gateway,
+				Gateway:               getID.gateway,
 				DisableGatewayService: false,
 			}
 			defer objectResponse(w, res)
@@ -611,12 +579,11 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	} else {
 		/* Using Docker -o options parameter */
-		mode, err := getIPVlanMode(getID.modeOpt)
+		mode, err := setIpVlanMode(getID.modeOpt)
 		if err != nil {
 			log.Errorf("error getting vlan mode [ %v ]: %s", mode, err)
 			return
 		}
-
 		// Get the link for the master index (Example: the docker host eth iface)
 		hostEth, err := netlink.LinkByName(ipVlanEthIface)
 		if err != nil {
@@ -655,7 +622,7 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 		if ipVlanMode == ipVlanL2 {
 			res = &joinResponse{
 				InterfaceName: *ifname,
-				Gateway:       driver.gateway,
+				Gateway:       getID.gateway,
 			}
 			defer objectResponse(w, res)
 		}
