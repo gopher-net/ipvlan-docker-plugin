@@ -6,15 +6,17 @@ import (
 
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/libnetwork/types"
+	"net"
 )
 
 type network struct {
 	id        string
 	endpoints endpointTable
-	driver    *driver
+	gateway   string
 	ifaceOpt  string
 	modeOpt   string
 	sync.Mutex
+	cidr *net.IPNet
 }
 
 type networkTable map[string]*network

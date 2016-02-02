@@ -35,8 +35,6 @@ func main() {
 		flagSocket,
 		ipvlan.FlagIpvlanEthIface,
 		ipvlan.FlagIPVlanMode,
-		ipvlan.FlagGateway,
-		ipvlan.FlagSubnet,
 		ipvlan.FlagMtu,
 		ipvlan.FlagRoutingManager,
 		ipvlan.FlagBgpAs,

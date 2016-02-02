@@ -42,11 +42,11 @@ $ docker  daemon -D
 
 **2.**  Start the driver.
 
-In the repo directory, use the binary named `ipvlan-docker-plugin-0.2-Linux-x86_64`. The binary can of course be renamed.
+In the repo directory, use the binary named `ipvlan-docker-plugin-0.3-Linux-x86_64`. The binary can of course be renamed.
 
 ```
 $ cd binaries
-$ ./ipvlan-docker-plugin-0.2-Linux-x86_64 -d
+$ ./ipvlan-docker-plugin-0.3-Linux-x86_64 -d
 
 # (optional debug flag) -d
 ```
@@ -79,7 +79,7 @@ This example can also be run up to a ToR switch with a .1q trunk. To test on a l
 Start the plugin the same as the above example (-d for debug) along with the Docker daemon running `$ docker daemon`:
 
 ```
-$ ./ipvlan-docker-plugin-0.2-Linux-x86_64 -d
+$ ./ipvlan-docker-plugin-0.3-Linux-x86_64 -d
 ```
 
 **Vlan ID 20**
@@ -92,9 +92,11 @@ ip link add link eth1 name eth1.20 type vlan id 20
 $ ip link set eth1.20 up
 
 # now add networks and hosts as you would normally by attaching to the master (sub)interface that is tagged
-$ docker network  create  -d ipvlan  --subnet=192.168.20.0/24 --gateway=192.168.20.1 -o host_iface=eth1.20 ipvlan101
-$ docker run --net=ipvlan101 -it --name ivlan_test1 --rm ubuntu
-$ docker run --net=ipvlan101 -it --name ivlan_test2 --rm ubuntu
+$ docker network  create  -d ipvlan  --subnet=192.168.20.0/24 --gateway=192.168.20.1 -o host_iface=eth1.20 ipvlan20
+$ docker run --net=ipvlan20 -it --name ivlan_test1 --rm ubuntu
+$ docker run --net=ipvlan20 -it --name ivlan_test2 --rm ubuntu
+
+# ivlan_test1 should be able to ping ivlan_test2 now.
 ```
 
 **Vlan ID 30**
@@ -108,18 +110,21 @@ $ ip link set eth1.30 up
 
 # now add networks and hosts as you would normally by attaching to the master (sub)interface that is tagged
 $ docker network  create  -d ipvlan  --subnet=192.168.30.0/24 --gateway=192.168.30.1 -o host_iface=eth1.30 ipvlan130
-$ docker run --net=ipvlan130 -it --name ivlan_test3 --rm ubuntu
-$ docker run --net=ipvlan130 -it --name ivlan_test4 --rm ubuntu
+$ docker run --net=ipvlan30 -it --name ivlan_test3 --rm ubuntu
+$ docker run --net=ipvlan30 -it --name ivlan_test4 --rm ubuntu
+
+# ivlan_test3 should be able to ping ivlan_test4 now.
 ```
+
+Docker networks are now persistant after a reboot. The plugin does not currently support dealing with unknown networks. That is a priority next. To remove all of the network configs on a docker daemon restart you can simply delete the directory with: `rm  /var/lib/docker/network/files/*`
 
 ### Example L3 Mode
 
-TODO
+Ipvlan L3 mode requires a route to be added in the default namespace as well as be advertised or summarized to the rest of the network. This makes it both highly scalable and very attractive to integrate into either the underlay IGP/EGPs or exchange prefixes into overlays with distributed datastores or gateway protos. You can simply replace `L2` with `L3` to do so but since the routes need to be orchestrated throughout a cluster take a look at the next section for the [Go-BGP L3 mode integration](https://github.com/gopher-net/ipvlan-docker-plugin#go-bgp-l3-mode-integration).
 
 ### Go-BGP L3 mode integration
 
-See the [README](https://github.com/gopher-net/ipvlan-docker-plugin/blob/master/plugin/routing/routing-manager.md) in the Go-BGP integration section (killer next-gen BGP daemon from [OSRG](https://github.com/osrg/gobgp)). 
-
+See the [README](https://github.com/gopher-net/ipvlan-docker-plugin/blob/master/plugin/routing/routing-manager.md) in the Go-BGP integration section (killer next-gen BGP daemon from our friends at [github.com/osrg/gobgp](https://github.com/osrg/gobgp)).
 
 ### Notes and General IPVlan Caveats
 

@@ -19,7 +19,6 @@ var (
 	ipVlanMode     = "l2"             // ipvlan l2 is the default
 	ipVlanEthIface = "eth1"           // default to eth0?
 	defaultSubnet  = "192.168.1.0/24" // Should this just be the eth0 IP subnet?
-	gatewayIP      = ""               // GW required for L2. increment network addr+1 if not defined
 	cliMTU         = 1500
 	routingManager = "gobgp"
 	BgpAs          = "65000"
