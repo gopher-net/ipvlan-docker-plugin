@@ -295,20 +295,23 @@ func (driver *driver) createNetwork(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if n.ifaceOpt == "" {
+		n.ifaceOpt = ipVlanEthIface
+	}
 	driver.addNetwork(n)
 	emptyResponse(w)
 
 	if ipVlanMode == ipVlanL3 {
-		log.Debugf("Adding route for the local ipvlan subnet [ %s ] in the default namespace using the specified host interface [ %s]", netCidr.String(), ipVlanEthIface)
-		ipvlanParent, err := netlink.LinkByName(ipVlanEthIface)
+		log.Debugf("Adding route for the local ipvlan subnet [ %s ] in the default namespace using the specified host interface [ %s]", netCidr.String(), n.ifaceOpt)
+		ipvlanParent, err := netlink.LinkByName(n.ifaceOpt)
 		// Add a route in the default NS to point to the IPVlan namespace subnet
 		addRouteIface(netCidr, ipvlanParent)
 		if err != nil {
 			log.Debugf("a problem occurred adding the container subnet default namespace route", err)
 		}
 	} else if ipVlanMode == ipVlanL3Routing {
-		log.Debugf("Adding route for the local ipvlan subnet [ %s ] in the default namespace using the specified host interface [ %s]", netCidr.String(), ipVlanEthIface)
-		ipvlanParent, err := netlink.LinkByName(ipVlanEthIface)
+		log.Debugf("Adding route for the local ipvlan subnet [ %s ] in the default namespace using the specified host interface [ %s]", netCidr.String(), n.ifaceOpt)
+		ipvlanParent, err := netlink.LinkByName(n.ifaceOpt)
 		// Add a route in the default NS to point to the IPVlan namespace subnet
 		addRouteIface(netCidr, ipvlanParent)
 		if err != nil {
@@ -518,9 +521,9 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Get the link for the master index (Example: the docker host eth iface)
-		hostEth, err := netlink.LinkByName(ipVlanEthIface)
+		hostEth, err := netlink.LinkByName(getID.ifaceOpt)
 		if err != nil {
-			log.Warnf("Error looking up the parent iface [ %s ] error: [ %s ]", ipVlanEthIface, err)
+			log.Warnf("Error looking up the parent iface [ %s ] error: [ %s ]", getID.ifaceOpt, err)
 		}
 		ipvlan := &netlink.IPVlan{
 			LinkAttrs: netlink.LinkAttrs{
@@ -585,9 +588,10 @@ func (driver *driver) joinEndpoint(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Get the link for the master index (Example: the docker host eth iface)
-		hostEth, err := netlink.LinkByName(ipVlanEthIface)
+		hostEth, err := netlink.LinkByName(getID.ifaceOpt)
+		log.Debugf("interface... %v", getID)
 		if err != nil {
-			log.Warnf("Error looking up the parent iface [ %s ] error: [ %s ]", ipVlanEthIface, err)
+			log.Warnf("Error looking up the parent iface [ %s ] error: [ %s ]", getID.ifaceOpt, err)
 		}
 		ipvlan := &netlink.IPVlan{
 			LinkAttrs: netlink.LinkAttrs{
