@@ -1,6 +1,12 @@
 ipvlan-docker-plugin
 =================
 
+**Update:** We are working on getting both the MacVlan and IpVlan drivers out of incubation from GopherNet, to upstream Docker Libnetwork natively. Thanks to those who helped with vetting how MacVlan and IpVlan interact with containers, its much appreciated. The notes, PR, early IT tests can be found at: [Macvlan, Ipvlan and 802.1q Trunk Driver Notes](https://gist.github.com/nerdalert/c0363c15d20986633fda). We will leave the drivers up and not deprecate them so that folks can have some example drivers to continue innovating with new network technologies.
+
+Would be interested to hear folks thoughts on getting a pattern togeth for bolting on a external control planes (likely starting with osrg/gobgp because they are awesomez). 
+
+--
+
 ipvlan is a lightweight L2 and L3 network implementation that does not require traditional bridges and is generally pretty kewl.
 
 ### Pre-Requisites
